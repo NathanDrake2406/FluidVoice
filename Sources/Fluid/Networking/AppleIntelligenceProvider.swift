@@ -66,7 +66,7 @@ final class AppleIntelligenceProvider {
     }
 
     /// Process rewrite/write requests with conversation history
-    func processRewrite(messages: [(role: String, content: String)], isWriteMode: Bool) async throws -> String {
+    func processRewrite(messages: [(role: String, content: String)], systemPrompt: String) async throws -> String {
         let session = LanguageModelSession()
 
         // Build the conversation as a single prompt since FoundationModels
@@ -74,21 +74,7 @@ final class AppleIntelligenceProvider {
         var fullPrompt = ""
 
         // Add system context
-        if isWriteMode {
-            fullPrompt += """
-            You are a helpful writing assistant. The user will ask you to write or generate text for them.
-            Respond directly with the requested content. Be concise and helpful.
-            Output ONLY what they asked for - no explanations or preamble.
-
-            """
-        } else {
-            fullPrompt += """
-            You are a writing assistant that rewrites text according to user instructions.
-            Follow the user's specific instructions for how to rewrite.
-            Output ONLY the rewritten text. No explanations, no quotes, no preamble.
-
-            """
-        }
+        fullPrompt += "\(systemPrompt)\n\n"
 
         // Add conversation history
         for message in messages {

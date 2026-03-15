@@ -11,8 +11,13 @@ extension VoiceEngineSettingsView {
     // MARK: - Speech Recognition Card
 
     var speechRecognitionCard: some View {
-        let activeModel = self.settings.selectedSpeechModel
-        let otherModels = self.viewModel.filteredSpeechModels.filter { $0 != activeModel }
+        let selectedModel = self.settings.selectedSpeechModel
+        let activeModel = selectedModel.isInstalled ? selectedModel : nil
+        let hasActiveModel = activeModel != nil
+        let otherModels = self.viewModel.filteredSpeechModels.filter { model in
+            guard let activeModel else { return true }
+            return model != activeModel
+        }
 
         return ThemedCard(hoverEffect: false) {
             VStack(alignment: .leading, spacing: 14) {
@@ -102,18 +107,30 @@ extension VoiceEngineSettingsView {
 
                 // Active + Other models list
                 VStack(alignment: .leading, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Active Model")
-                            .font(.callout)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.secondary)
-                        self.speechModelCard(for: activeModel)
+                    if let activeModel {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Active Model")
+                                .font(.callout)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.secondary)
+                            self.speechModelCard(for: activeModel)
+                        }
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Active Model")
+                                .font(.callout)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.secondary)
+                            Label("No active model yet. Download and activate one below.", systemImage: "arrow.down.circle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     Divider().padding(.vertical, 2)
 
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Other Models")
+                        Text(hasActiveModel ? "Other Models" : "Available Models")
                             .font(.callout)
                             .fontWeight(.semibold)
                             .foregroundStyle(.secondary)
@@ -147,108 +164,144 @@ extension VoiceEngineSettingsView {
     /// Stats panel showing speed/accuracy bars that animate when model changes
     var modelStatsPanel: some View {
         let model = self.viewModel.previewSpeechModel
+        let supportsParakeetCustomWords = model == .parakeetTDT || model == .parakeetTDTv2
 
-        return HStack(alignment: .center, spacing: 20) {
-            VStack(alignment: .leading, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(model.humanReadableName)
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(self.theme.palette.primaryText)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(model.humanReadableName)
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(self.theme.palette.primaryText)
 
-                        if let badge = model.badgeText {
-                            Text(badge)
+                            if let badge = model.badgeText {
+                                Text(badge)
+                                    .font(.caption2)
+                                    .fontWeight(.semibold)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(badge == "FluidVoice Pick" ? .cyan.opacity(0.2) : .orange.opacity(0.2)))
+                                    .foregroundStyle(badge == "FluidVoice Pick" ? .cyan : .orange)
+                            }
+
+                            Spacer()
+                        }
+
+                        Text(model.cardDescription)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    HStack(spacing: 8) {
+                        Label(model.downloadSize, systemImage: "internaldrive")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                        if model.requiresAppleSilicon {
+                            Text("Apple Silicon")
                                 .font(.caption2)
-                                .fontWeight(.semibold)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Capsule().fill(badge == "FluidVoice Pick" ? .cyan.opacity(0.2) : .orange.opacity(0.2)))
-                                .foregroundStyle(badge == "FluidVoice Pick" ? .cyan : .orange)
+                                .background(Capsule().fill(self.theme.palette.accent.opacity(0.2)))
+                                .foregroundStyle(self.theme.palette.accent)
                         }
+
+                        Text(model.languageSupport)
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(.quaternary))
+                            .foregroundStyle(.secondary)
 
                         Spacer()
                     }
 
-                    Text(model.cardDescription)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-
-                HStack(spacing: 8) {
-                    Label(model.downloadSize, systemImage: "internaldrive")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-
-                    if model.requiresAppleSilicon {
-                        Text("Apple Silicon")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(self.theme.palette.accent.opacity(0.2)))
-                            .foregroundStyle(self.theme.palette.accent)
+                    // Memory warning for large models
+                    if let memoryWarning = model.memoryWarning {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                            Text(memoryWarning)
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(.orange.opacity(0.1))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(.orange.opacity(0.3), lineWidth: 1)
+                                )
+                        )
                     }
-
-                    Text(model.languageSupport)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(.quaternary))
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                // Memory warning for large models
-                if let memoryWarning = model.memoryWarning {
-                    HStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                        Text(memoryWarning)
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(.orange.opacity(0.1))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(.orange.opacity(0.3), lineWidth: 1)
-                            )
+                HStack(spacing: 16) {
+                    LiquidBar(
+                        fillPercent: model.speedPercent,
+                        color: .yellow,
+                        secondaryColor: .orange,
+                        icon: "bolt.fill",
+                        label: "Speed"
+                    )
+
+                    LiquidBar(
+                        fillPercent: model.accuracyPercent,
+                        color: Color.fluidGreen,
+                        secondaryColor: .cyan,
+                        icon: "target",
+                        label: "Accuracy"
                     )
                 }
+                .frame(width: 140, alignment: .center)
+                .animation(.spring(response: 0.5, dampingFraction: 0.7), value: model.id)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
 
-            HStack(spacing: 16) {
-                LiquidBar(
-                    fillPercent: model.speedPercent,
-                    color: .yellow,
-                    secondaryColor: .orange,
-                    icon: "bolt.fill",
-                    label: "Speed"
-                )
+            if supportsParakeetCustomWords {
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.caption)
+                        .foregroundStyle(Color.fluidGreen)
 
-                LiquidBar(
-                    fillPercent: model.accuracyPercent,
-                    color: Color.fluidGreen,
-                    secondaryColor: .cyan,
-                    icon: "target",
-                    label: "Accuracy"
+                    Text("Custom Words supported on Parakeet. Teach names, product terms, and uncommon words for better accuracy.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+
+                    Spacer(minLength: 8)
+
+                    Button("Open Custom Dictionary") {
+                        NotificationCenter.default.post(name: .openCustomDictionaryFromVoiceEngine, object: nil)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.fluidGreen)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.fluidGreen.opacity(0.10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.fluidGreen.opacity(0.30), lineWidth: 1)
+                        )
                 )
             }
-            .frame(width: 140, alignment: .center)
-            .animation(.spring(response: 0.5, dampingFraction: 0.7), value: model.id)
         }
         .padding(.vertical, 6)
     }
 
     func speechModelCard(for model: SettingsStore.SpeechModel) -> some View {
         let isSelected = self.viewModel.previewSpeechModel == model
-        let isActive = self.viewModel.isActiveSpeechModel(model)
+        let isConfiguredActive = self.viewModel.isActiveSpeechModel(model)
+        let isActive = isConfiguredActive && model.isInstalled
 
         return HStack(alignment: .top, spacing: 10) {
             Circle()
@@ -302,23 +355,43 @@ extension VoiceEngineSettingsView {
             if self.viewModel.downloadingModel == model {
                 // This specific model is currently being downloaded
                 VStack(alignment: .trailing, spacing: 4) {
-                    ProgressView(value: self.viewModel.downloadProgress)
-                        .progressViewStyle(.linear)
-                        .frame(width: 90)
-                    Text("\(Int(self.viewModel.downloadProgress * 100))%")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    if self.viewModel.downloadProgress >= 0.82 {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.mini)
+                            Text("Finalizing…")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ProgressView(value: self.viewModel.downloadProgress)
+                            .progressViewStyle(.linear)
+                            .frame(width: 90)
+                        Text("\(Int(self.viewModel.downloadProgress * 100))%")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-            } else if (self.viewModel.asr.isDownloadingModel || self.viewModel.asr.isLoadingModel) && isActive && !self.viewModel.asr.isAsrReady {
+            } else if (self.viewModel.asr.isDownloadingModel || self.viewModel.asr.isLoadingModel) && isConfiguredActive && !self.viewModel.asr.isAsrReady {
                 // Active model is loading/downloading (for Activate flow)
                 VStack(alignment: .trailing, spacing: 4) {
                     if let progress = self.viewModel.asr.downloadProgress, self.viewModel.asr.isDownloadingModel {
-                        ProgressView(value: progress)
-                            .progressViewStyle(.linear)
-                            .frame(width: 90)
-                        Text("\(Int(progress * 100))%")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        if progress >= 0.82 {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                Text("Finalizing…")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            ProgressView(value: progress)
+                                .progressViewStyle(.linear)
+                                .frame(width: 90)
+                            Text("\(Int(progress * 100))%")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     } else {
                         ProgressView()
                             .controlSize(.mini)
@@ -330,7 +403,7 @@ extension VoiceEngineSettingsView {
                 }
             } else if model.isInstalled {
                 HStack(spacing: 8) {
-                    if isActive {
+                    if isConfiguredActive {
                         let isLoading = (self.viewModel.asr.isLoadingModel || self.viewModel.asr.isDownloadingModel) && !self.viewModel.asr.isAsrReady
                         Text(isLoading ? "Loading…" : "Active")
                             .font(.caption2)
@@ -416,9 +489,18 @@ extension VoiceEngineSettingsView {
             if (self.viewModel.asr.isDownloadingModel || self.viewModel.asr.isLoadingModel) && !self.viewModel.asr.isAsrReady {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small).fixedSize()
-                    Text(self.viewModel.asr.isLoadingModel ? "Loading model…" : "Downloading…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if self.viewModel.asr.isDownloadingModel,
+                       let progress = self.viewModel.asr.downloadProgress,
+                       progress >= 0.82
+                    {
+                        Text("Finalizing download and loading model…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(self.viewModel.asr.isLoadingModel ? "Loading model…" : "Downloading…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             } else if self.viewModel.asr.isAsrReady {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.fluidGreen).font(.caption)
@@ -545,4 +627,8 @@ extension VoiceEngineSettingsView {
         }
         return nil
     }
+}
+
+extension Notification.Name {
+    static let openCustomDictionaryFromVoiceEngine = Notification.Name("OpenCustomDictionaryFromVoiceEngine")
 }

@@ -19,7 +19,13 @@ class DebugLogger: ObservableObject {
         }
         // Delay access to SettingsStore until after initial singleton setup
         // Use UserDefaults directly to avoid the circular dependency
-        let enabled = UserDefaults.standard.bool(forKey: "EnableDebugLogs")
+        let defaults = UserDefaults.standard
+        let enabled: Bool
+        if defaults.object(forKey: "EnableDebugLogs") == nil {
+            enabled = true
+        } else {
+            enabled = defaults.bool(forKey: "EnableDebugLogs")
+        }
         self._loggingEnabledCache = enabled
         return enabled
     }
@@ -69,16 +75,16 @@ class DebugLogger: ObservableObject {
 
     /// Refresh the cached logging setting (call after SettingsStore is fully initialized)
     func refreshLoggingEnabled() {
-        self._loggingEnabledCache = UserDefaults.standard.bool(forKey: "EnableDebugLogs")
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "EnableDebugLogs") == nil {
+            self._loggingEnabledCache = true
+        } else {
+            self._loggingEnabledCache = defaults.bool(forKey: "EnableDebugLogs")
+        }
     }
 
     func log(_ message: String, level: LogLevel = .info, source: String = "App") {
         let loggingEnabled = self.loggingEnabled
-
-        // If logging is disabled, we drop all logs except errors which are always printed to console
-        if !loggingEnabled, level != .error {
-            return
-        }
 
         self.queue.async {
             let timestamp = Date()
@@ -86,11 +92,11 @@ class DebugLogger: ObservableObject {
 
             let formattedLine = self.formatLogLine(timestamp: timestampString, level: level, source: source, message: message)
 
-            // Always write to FileLogger and Console if we reach this point (either logging is enabled OR it's an error)
+            // Always persist diagnostics so issues can be debugged even if UI debug mode is off.
             FileLogger.shared.append(line: formattedLine)
             print(formattedLine)
 
-            // Only update the UI logs if logging is enabled (don't show errors in UI if debug is off)
+            // UI log panel still respects the in-app debug toggle.
             guard loggingEnabled else { return }
 
             let entry = LogEntry(

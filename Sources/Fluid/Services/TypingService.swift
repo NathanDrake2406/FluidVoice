@@ -113,6 +113,26 @@ final class TypingService {
         self.log("[TypingService] insertTextInstantly called with \(text.count) characters")
         self.log("[TypingService] Attempting to type text: \"\(text.prefix(50))\(text.count > 50 ? "..." : "")\"")
 
+        if text.utf16.count > Self.cgEventUnicodeLimit {
+            self.log("[TypingService] Text exceeds CGEvent limit (\(text.utf16.count) UTF-16 units), using clipboard insertion")
+            if self.insertTextViaClipboard(text) {
+                self.log("[TypingService] SUCCESS: Clipboard insertion completed (long text path)")
+                return
+            }
+            self.log("[TypingService] Clipboard failed for long text, trying character-by-character")
+            for (index, char) in text.enumerated() {
+                if index % 10 == 0 {
+                    self.log("[TypingService] Typing character \(index + 1)/\(text.count)")
+                }
+                self.typeCharacter(char)
+                usleep(1000)
+            }
+            self.log("[TypingService] Character-by-character typing completed")
+            return
+        }
+
+        // Short text: use the normal cascade (CGEvent bulk is safe for <= cgEventUnicodeLimit)
+
         // Preferred: target a specific PID when provided (e.g., the app that was focused when recording started).
         if let preferredTargetPID, preferredTargetPID > 0 {
             self.log("[TypingService] Trying CGEvent insertion targeting preferred PID \(preferredTargetPID)")
@@ -155,7 +175,6 @@ final class TypingService {
         }
 
         // Secondary: Try Accessibility insertion into the actual focused element
-        // This is useful for some native apps or when direct event posting fails
         self.log("[TypingService] Trying Accessibility focused-element insertion")
         if self.insertTextViaAccessibility(text) {
             self.log("[TypingService] SUCCESS: Accessibility insertion completed")
@@ -190,6 +209,8 @@ final class TypingService {
         self.log("[TypingService] Character-by-character typing completed")
     }
 
+    private static let cgEventUnicodeLimit = 200
+
     private func insertTextBulkInstant(_ text: String, targetPID: pid_t) -> Bool {
         self.log("[TypingService] Starting INSTANT bulk CGEvent insertion (NO CLIPBOARD) to PID \(targetPID)")
 
@@ -198,9 +219,13 @@ final class TypingService {
             return false
         }
 
-        // Convert entire text to UTF16
         let utf16Array = Array(text.utf16)
         self.log("[TypingService] Converting \(text.count) characters to CGEvents (UTF16 count \(utf16Array.count))")
+
+        guard utf16Array.count <= Self.cgEventUnicodeLimit else {
+            self.log("[TypingService] Text too long for single CGEvent (\(utf16Array.count) UTF-16 units > \(Self.cgEventUnicodeLimit)), falling back")
+            return false
+        }
 
         guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
@@ -224,6 +249,12 @@ final class TypingService {
         self.log("[TypingService] Starting INSTANT bulk CGEvent insertion via HID (NO PID)")
 
         let utf16Array = Array(text.utf16)
+
+        guard utf16Array.count <= Self.cgEventUnicodeLimit else {
+            self.log("[TypingService] Text too long for single HID CGEvent (\(utf16Array.count) > \(Self.cgEventUnicodeLimit)), falling back")
+            return false
+        }
+
         guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
         else {

@@ -11,23 +11,30 @@ import SwiftUI
 struct CustomDictionaryView: View {
     @Environment(\.theme) private var theme
     @State private var entries: [SettingsStore.CustomDictionaryEntry] = SettingsStore.shared.customDictionaryEntries
+    @State private var boostTerms: [ParakeetVocabularyStore.VocabularyConfig.Term] = []
     @State private var showAddSheet = false
     @State private var editingEntry: SettingsStore.CustomDictionaryEntry?
+    @State private var showAddBoostSheet = false
+    @State private var editingBoostTerm: EditableBoostTerm?
 
     // Collapsible section states
-    @State private var isOfflineSectionExpanded = true
-    @State private var isAISectionExpanded = false
+    @State private var isOfflineSectionExpanded = false
+    @State private var isAISectionExpanded = true
+
+    @State private var boostStatusMessage = "Add custom words for better Parakeet recognition."
+    @State private var boostHasError = false
+    @State private var vocabBoostingEnabled: Bool = SettingsStore.shared.vocabularyBoostingEnabled
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 16) {
                 self.pageHeader
 
-                // Section 1: Offline/Instant Replacement
-                self.offlineReplacementSection
-
-                // Section 2: AI Post-Processing (Coming Soon)
+                // Section 1: Custom Words (Parakeet)
                 self.aiPostProcessingSection
+
+                // Section 2: Instant Replacement
+                self.offlineReplacementSection
             }
             .padding(20)
         }
@@ -48,6 +55,25 @@ struct CustomDictionaryView: View {
                 }
             }
         }
+        .sheet(isPresented: self.$showAddBoostSheet) {
+            AddBoostTermSheet(existingTerms: self.existingBoostTerms()) { newTerm in
+                self.boostTerms.append(newTerm)
+                self.saveBoostTerms()
+            }
+        }
+        .sheet(item: self.$editingBoostTerm) { editable in
+            EditBoostTermSheet(
+                term: editable.term,
+                existingTerms: self.existingBoostTerms(excludingIndex: editable.index)
+            ) { updatedTerm in
+                guard self.boostTerms.indices.contains(editable.index) else { return }
+                self.boostTerms[editable.index] = updatedTerm
+                self.saveBoostTerms()
+            }
+        }
+        .onAppear {
+            self.loadBoostTerms()
+        }
     }
 
     // MARK: - Page Header
@@ -63,13 +89,13 @@ struct CustomDictionaryView: View {
                     .fontWeight(.semibold)
             }
 
-            Text("Improve transcription accuracy by defining word replacements. Choose between instant offline replacement or AI-powered context-aware corrections.")
+            Text("Improve transcription accuracy with Custom Words for names and product terms, plus Instant Replacement for simple find-and-replace.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
     }
 
-    // MARK: - Section 1: Offline Replacement
+    // MARK: - Section 2: Offline Replacement
 
     private var offlineReplacementSection: some View {
         ThemedCard(hoverEffect: false) {
@@ -203,7 +229,7 @@ struct CustomDictionaryView: View {
         }
     }
 
-    // MARK: - Section 2: AI Post-Processing
+    // MARK: - Section 1: Custom Words (Parakeet)
 
     private var aiPostProcessingSection: some View {
         ThemedCard(hoverEffect: false) {
@@ -220,22 +246,34 @@ struct CustomDictionaryView: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 16)
 
-                        Text("AI Post-Processing")
+                        Text("Custom Words (Parakeet)")
                             .font(.headline)
 
-                        // AI badge
-                        Text("AI")
+                        Text("PARAKEET")
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(RoundedRectangle(cornerRadius: 4).fill(.purple.opacity(0.2)))
-                            .foregroundStyle(.purple)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(self.theme.palette.accent.opacity(0.2)))
+                            .foregroundStyle(self.theme.palette.accent)
 
-                        Text("COMING SOON")
+                        Text("\(self.boostTerms.count)")
                             .font(.caption2.weight(.medium))
-                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(.quaternary))
+                            .foregroundStyle(.secondary)
 
                         Spacer()
+
+                        if self.isAISectionExpanded && !self.boostTerms.isEmpty {
+                            Button {
+                                self.showAddBoostSheet = true
+                            } label: {
+                                Image(systemName: "plus")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
                     }
                     .contentShape(Rectangle())
                 }
@@ -245,33 +283,105 @@ struct CustomDictionaryView: View {
                     Divider()
                         .padding(.vertical, 12)
 
-                    // Description
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Context-aware corrections powered by your AI provider. The AI will understand context and apply intelligent replacements.")
+                        Text("Add names, product words, and uncommon terms in a simple form.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        // Planned features
-                        VStack(alignment: .leading, spacing: 6) {
-                            Label("Context-aware replacements", systemImage: "brain.head.profile")
-                            Label("Learns from your corrections", systemImage: "sparkles")
-                            Label("Works with technical jargon", systemImage: "wrench.and.screwdriver")
-                            Label("Requires AI provider API key", systemImage: "key")
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        Text("Words from Instant Replacement are also used here automatically.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
 
-                        // Coming soon message
+                        Text("Applies when using a Parakeet voice engine.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
                         HStack {
-                            Image(systemName: "hammer.fill")
-                                .foregroundStyle(.orange)
-                            Text("This feature is under development")
+                            Toggle(isOn: self.$vocabBoostingEnabled) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Vocabulary Boosting")
+                                        .font(.subheadline.weight(.medium))
+                                    Text("Uses a secondary ML model to improve recognition of custom words. Disable if you experience issues.")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                            .onChange(of: self.vocabBoostingEnabled) { _, newValue in
+                                SettingsStore.shared.vocabularyBoostingEnabled = newValue
+                            }
+                        }
+                        .padding(10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(self.theme.palette.contentBackground.opacity(0.6))
+                        )
+
+                        if self.boostTerms.isEmpty {
+                            VStack(spacing: 10) {
+                                Image(systemName: "waveform.and.magnifyingglass")
+                                    .font(.system(size: 28))
+                                    .foregroundStyle(.tertiary)
+                                Text("No custom words yet")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                Button {
+                                    self.showAddBoostSheet = true
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "plus")
+                                        Text("Add Custom Word")
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(self.theme.palette.accent)
+                                .controlSize(.small)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                        } else {
+                            VStack(spacing: 8) {
+                                ForEach(Array(self.boostTerms.enumerated()), id: \.offset) { index, term in
+                                    BoostTermRow(
+                                        term: term,
+                                        onEdit: {
+                                            self.editingBoostTerm = EditableBoostTerm(index: index, term: term)
+                                        },
+                                        onDelete: {
+                                            self.deleteBoostTerm(at: index)
+                                        }
+                                    )
+                                }
+                            }
+
+                            HStack {
+                                Button {
+                                    self.showAddBoostSheet = true
+                                } label: {
+                                    Label("Add Word", systemImage: "plus")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(self.theme.palette.accent)
+                                .controlSize(.small)
+
+                                Spacer()
+                            }
+                        }
+
+                        HStack {
+                            Image(systemName: self.boostHasError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                                .foregroundStyle(self.boostHasError ? .red : .secondary)
+                            Text(self.boostStatusMessage)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(self.boostHasError ? .red : .secondary)
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(.orange.opacity(0.1)))
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(self.boostHasError ? Color.red.opacity(0.08) : self.theme.palette.contentBackground.opacity(0.6))
+                        )
                     }
                 }
             }
@@ -285,6 +395,36 @@ struct CustomDictionaryView: View {
         SettingsStore.shared.customDictionaryEntries = self.entries
         // Invalidate cached regex patterns so changes take effect immediately
         ASRService.invalidateDictionaryCache()
+        NotificationCenter.default.post(name: .parakeetVocabularyDidChange, object: nil)
+    }
+
+    private func loadBoostTerms() {
+        do {
+            self.boostTerms = try ParakeetVocabularyStore.shared.loadUserBoostTerms()
+            self.boostStatusMessage = "Loaded \(self.boostTerms.count) custom words."
+            self.boostHasError = false
+        } catch {
+            self.boostTerms = []
+            self.boostStatusMessage = "Couldn't load custom words: \(error.localizedDescription)"
+            self.boostHasError = true
+        }
+    }
+
+    private func saveBoostTerms() {
+        do {
+            try ParakeetVocabularyStore.shared.saveUserBoostTerms(self.boostTerms)
+            self.boostStatusMessage = "Saved \(self.boostTerms.count) custom words."
+            self.boostHasError = false
+        } catch {
+            self.boostStatusMessage = "Couldn't save custom words: \(error.localizedDescription)"
+            self.boostHasError = true
+        }
+    }
+
+    private func deleteBoostTerm(at index: Int) {
+        guard self.boostTerms.indices.contains(index) else { return }
+        self.boostTerms.remove(at: index)
+        self.saveBoostTerms()
     }
 
     private func deleteEntry(_ entry: SettingsStore.CustomDictionaryEntry) {
@@ -301,6 +441,285 @@ struct CustomDictionaryView: View {
             }
         }
         return triggers
+    }
+
+    private func existingBoostTerms(excludingIndex: Int? = nil) -> Set<String> {
+        var terms: Set<String> = []
+        for (index, term) in self.boostTerms.enumerated() where index != excludingIndex {
+            terms.insert(term.text.lowercased())
+        }
+        return terms
+    }
+}
+
+private struct EditableBoostTerm: Identifiable {
+    let id = UUID()
+    let index: Int
+    let term: ParakeetVocabularyStore.VocabularyConfig.Term
+}
+
+private enum BoostStrengthPreset: String, CaseIterable, Identifiable {
+    case mild = "Mild"
+    case balanced = "Balanced"
+    case strong = "Strong"
+
+    var id: String { self.rawValue }
+
+    var weight: Float {
+        switch self {
+        case .mild: return 5.0
+        case .balanced: return 10.0
+        case .strong: return 13.0
+        }
+    }
+
+    var hint: String {
+        switch self {
+        case .mild: return "Very light nudge with minimal impact."
+        case .balanced: return "Best default for most names and product terms."
+        case .strong: return "Use when this word should win more often in noisy audio."
+        }
+    }
+
+    static func nearest(for weight: Float) -> Self {
+        if weight < 8.5 { return .mild }
+        if weight > 11.5 { return .strong }
+        return .balanced
+    }
+}
+
+// MARK: - Boost Term Row
+
+struct BoostTermRow: View {
+    let term: ParakeetVocabularyStore.VocabularyConfig.Term
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(self.term.text)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(self.theme.palette.accent)
+            }
+
+            Spacer()
+
+            if let weight = self.term.weight {
+                Text("\(BoostStrengthPreset.nearest(for: weight).rawValue) priority")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(.quaternary))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 6) {
+                Button {
+                    self.onEdit()
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.caption2)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+
+                Button(role: .destructive) {
+                    self.onDelete()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption2)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.5)))
+    }
+}
+
+// MARK: - Add Boost Term Sheet
+
+struct AddBoostTermSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let existingTerms: Set<String>
+    let onSave: (ParakeetVocabularyStore.VocabularyConfig.Term) -> Void
+
+    @State private var termText = ""
+    @State private var strength: BoostStrengthPreset = .balanced
+
+    private var normalizedTerm: String {
+        self.termText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isDuplicate: Bool {
+        self.existingTerms.contains(self.normalizedTerm.lowercased())
+    }
+
+    private var canSave: Bool {
+        !self.normalizedTerm.isEmpty && !self.isDuplicate
+    }
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Add Custom Word")
+                    .font(.headline)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Preferred Word or Phrase")
+                        .font(.subheadline.weight(.medium))
+                    TextField("FluidVoice", text: self.$termText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { self.saveIfValid() }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Word Priority")
+                        .font(.subheadline.weight(.medium))
+                    Picker("Word Priority", selection: self.$strength) {
+                        ForEach(BoostStrengthPreset.allCases) { preset in
+                            Text(preset.rawValue).tag(preset)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text(self.strength.hint)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                if self.isDuplicate {
+                    Text("This term already exists.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                HStack {
+                    Button("Cancel") { self.dismiss() }
+                        .buttonStyle(.bordered)
+                    Spacer()
+                    Button("Save") { self.saveIfValid() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!self.canSave)
+                        .keyboardShortcut(.return, modifiers: [])
+                }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 420, idealWidth: 460, maxWidth: 520)
+        .frame(minHeight: 300, idealHeight: 340, maxHeight: 460)
+        .onAppear {
+            // Always start new entries at the recommended default.
+            self.termText = ""
+            self.strength = .balanced
+        }
+    }
+
+    private func saveIfValid() {
+        guard self.canSave else { return }
+        self.onSave(
+            ParakeetVocabularyStore.VocabularyConfig.Term(
+                text: self.normalizedTerm,
+                weight: self.strength.weight,
+                aliases: []
+            )
+        )
+        self.dismiss()
+    }
+}
+
+// MARK: - Edit Boost Term Sheet
+
+struct EditBoostTermSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let term: ParakeetVocabularyStore.VocabularyConfig.Term
+    let existingTerms: Set<String>
+    let onSave: (ParakeetVocabularyStore.VocabularyConfig.Term) -> Void
+
+    @State private var termText = ""
+    @State private var strength: BoostStrengthPreset = .balanced
+
+    private var normalizedTerm: String {
+        self.termText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isDuplicate: Bool {
+        self.existingTerms.contains(self.normalizedTerm.lowercased())
+    }
+
+    private var canSave: Bool {
+        !self.normalizedTerm.isEmpty && !self.isDuplicate
+    }
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Edit Custom Word")
+                    .font(.headline)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Preferred Word or Phrase")
+                        .font(.subheadline.weight(.medium))
+                    TextField("FluidVoice", text: self.$termText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { self.saveIfValid() }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Word Priority")
+                        .font(.subheadline.weight(.medium))
+                    Picker("Word Priority", selection: self.$strength) {
+                        ForEach(BoostStrengthPreset.allCases) { preset in
+                            Text(preset.rawValue).tag(preset)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text(self.strength.hint)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                if self.isDuplicate {
+                    Text("This term already exists.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                HStack {
+                    Button("Cancel") { self.dismiss() }
+                        .buttonStyle(.bordered)
+                    Spacer()
+                    Button("Save") { self.saveIfValid() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!self.canSave)
+                        .keyboardShortcut(.return, modifiers: [])
+                }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 420, idealWidth: 460, maxWidth: 520)
+        .frame(minHeight: 300, idealHeight: 340, maxHeight: 460)
+        .onAppear {
+            self.termText = self.term.text
+            self.strength = BoostStrengthPreset.nearest(for: self.term.weight ?? BoostStrengthPreset.balanced.weight)
+        }
+    }
+
+    private func saveIfValid() {
+        guard self.canSave else { return }
+        self.onSave(
+            ParakeetVocabularyStore.VocabularyConfig.Term(
+                text: self.normalizedTerm,
+                weight: self.strength.weight,
+                aliases: self.term.aliases
+            )
+        )
+        self.dismiss()
     }
 }
 

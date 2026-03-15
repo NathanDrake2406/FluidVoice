@@ -63,9 +63,9 @@ struct WelcomeView: View {
                                         : "Download the AI model for offline voice transcription (~500MB)"),
                                 status: (self.asr.isAsrReady || self.asr.modelsExistOnDisk) ? .completed : .pending,
                                 action: {
-                                    self.selectedSidebarItem = .aiEnhancements
+                                    self.selectedSidebarItem = .voiceEngine
                                 },
-                                actionButtonTitle: "Go to AI Settings",
+                                actionButtonTitle: "Go to Voice Engine",
                                 showActionButton: !(self.asr.isAsrReady || self.asr.modelsExistOnDisk)
                             )
 
@@ -215,11 +215,11 @@ struct WelcomeView: View {
                 }
                 .frame(maxWidth: .infinity)
 
-                // Write Mode
+                // Edit Mode
                 ThemedCard(style: .standard) {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 8) {
-                            Label("Write Mode", systemImage: "pencil.and.outline")
+                            Label("Edit Mode", systemImage: "pencil.and.outline")
                                 .font(.headline)
                                 .foregroundStyle(.blue)
 
@@ -227,20 +227,20 @@ struct WelcomeView: View {
 
                             Spacer()
 
-                            Button("Open") {
-                                self.selectedSidebarItem = .rewriteMode
+                            Button("Open AI Settings") {
+                                self.selectedSidebarItem = .aiEnhancements
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                         }
 
-                        Text("AI-powered writing assistant. Write fresh content or rewrite selected text with voice.")
+                        Text("AI-powered editing assistant. Write fresh content or edit selected text with voice.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
 
                         VStack(alignment: .leading, spacing: 10) {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("To Write Fresh")
+                                Text("Create New Text")
                                     .font(.subheadline.weight(.medium))
                                     .foregroundStyle(.blue)
 
@@ -257,7 +257,7 @@ struct WelcomeView: View {
                             }
 
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("To Rewrite/Edit")
+                                Text("Edit Selected Text")
                                     .font(.subheadline.weight(.medium))
                                     .foregroundStyle(.blue)
 
@@ -323,6 +323,24 @@ struct WelcomeView: View {
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
                             }
+                        }
+
+                        if self.settings.selectedSpeechModel == .parakeetTDT || self.settings.selectedSpeechModel == .parakeetTDTv2 {
+                            HStack(spacing: 6) {
+                                Image(systemName: "text.magnifyingglass")
+                                    .font(.caption)
+                                    .foregroundStyle(self.theme.palette.accent)
+                                Text(self.asr.wordBoostStatusText)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(self.theme.palette.contentBackground.opacity(0.6))
+                            )
                         }
 
                         VStack(alignment: .leading, spacing: 12) {
@@ -511,6 +529,960 @@ struct WelcomeView: View {
             Text(text)
                 .font(.caption)
                 .foregroundStyle(.primary.opacity(0.8))
+        }
+    }
+}
+
+struct OnboardingFlowView: View {
+    @EnvironmentObject var appServices: AppServices
+    private var asr: ASRService { self.appServices.asr }
+    @ObservedObject private var settings = SettingsStore.shared
+
+    @Binding var currentStep: Int
+    let accessibilityEnabled: Bool
+    let markAISkipped: () -> Void
+    let markPlaygroundValidated: () -> Void
+    let finishOnboarding: () -> Void
+    let openAccessibilitySettings: () -> Void
+    let menuBarManager: MenuBarManager
+    let theme: AppTheme
+
+    @State private var preferredLanguageChoice: PreferredLanguageChoice = .englishOnly
+
+    private enum PreferredLanguageChoice: String, CaseIterable, Identifiable {
+        case englishOnly
+        case multipleLanguages
+        case other
+
+        var id: String { self.rawValue }
+
+        var title: String {
+            switch self {
+            case .englishOnly:
+                return "English only"
+            case .multipleLanguages:
+                return "Multiple languages"
+            case .other:
+                return "Other"
+            }
+        }
+
+        var subtitle: String {
+            switch self {
+            case .englishOnly:
+                return "Uses Parakeet TDT v2"
+            case .multipleLanguages:
+                return "Uses Parakeet TDT v3"
+            case .other:
+                return "Choose a different model manually"
+            }
+        }
+    }
+
+    private enum Step: Int, CaseIterable {
+        case voiceModel = 0
+        case microphone = 1
+        case accessibility = 2
+        case aiEnhancement = 3
+        case playground = 4
+
+        var title: String {
+            switch self {
+            case .voiceModel:
+                return "Download Voice Model"
+            case .microphone:
+                return "Grant Microphone Access"
+            case .accessibility:
+                return "Enable Accessibility"
+            case .aiEnhancement:
+                return "Set Up AI Enhancement"
+            case .playground:
+                return "Run Playground Test"
+            }
+        }
+
+        var subtitle: String {
+            switch self {
+            case .voiceModel:
+                return CPUArchitecture.isAppleSilicon
+                    ? "Choose the best voice model for how you speak. Download it once to continue."
+                    : "Recommended for your Mac: Whisper. Download it once to continue."
+            case .microphone:
+                return "Allow FluidVoice to capture audio from your microphone."
+            case .accessibility:
+                return "Allow FluidVoice to type transcriptions into other apps."
+            case .aiEnhancement:
+                return "Optional: Configure AI post-processing or skip this step."
+            case .playground:
+                return "Record a quick sample to validate your setup before finishing."
+            }
+        }
+    }
+
+    private var step: Step {
+        Step(rawValue: self.currentStep) ?? .voiceModel
+    }
+
+    private var progressValue: Double {
+        Double(self.step.rawValue + 1) / Double(Step.allCases.count)
+    }
+
+    private var recommendedOnboardingModel: SettingsStore.SpeechModel {
+        if CPUArchitecture.isAppleSilicon {
+            switch self.preferredLanguageChoice {
+            case .englishOnly:
+                return .parakeetTDTv2
+            case .multipleLanguages, .other:
+                return .parakeetTDT
+            }
+        }
+        return .whisperBase
+    }
+
+    private var recommendedOnboardingModelDisplayName: String {
+        self.recommendedOnboardingModel.displayName
+    }
+
+    private var recommendedModelReasonText: String {
+        if CPUArchitecture.isAppleSilicon {
+            switch self.preferredLanguageChoice {
+            case .englishOnly:
+                return "Best if you mainly speak English. Lower complexity and tuned for English dictation."
+            case .multipleLanguages:
+                return "Best if you switch languages. Broader support with Parakeet TDT v3."
+            case .other:
+                return "Choose a different model below if neither of the default language paths fits."
+            }
+        }
+        return "Best for Intel Macs: dependable Whisper quality with broad compatibility."
+    }
+
+    private var onboardingModelOptions: [SettingsStore.SpeechModel] {
+        let candidates: [SettingsStore.SpeechModel] = CPUArchitecture.isAppleSilicon
+            ? [.parakeetTDT, .parakeetTDTv2, .whisperBase, .whisperSmall]
+            : [.whisperBase, .whisperTiny, .whisperSmall, .whisperMedium]
+
+        var seenModelIDs = Set<String>()
+        return candidates.filter { model in
+            guard SettingsStore.SpeechModel.availableModels.contains(model) else { return false }
+            return seenModelIDs.insert(model.id).inserted
+        }
+    }
+
+    private var onboardingAlternativeModels: [SettingsStore.SpeechModel] {
+        let filtered = self.onboardingModelOptions.filter { $0 != self.recommendedOnboardingModel }
+        guard self.preferredLanguageChoice == .other, self.shouldShowLanguageChoice else {
+            return filtered
+        }
+        return filtered.filter { model in
+            model != .parakeetTDT && model != .parakeetTDTv2
+        }
+    }
+
+    private var shouldShowLanguageChoice: Bool {
+        CPUArchitecture.isAppleSilicon
+    }
+
+    private var showsMappedRecommendedModel: Bool {
+        !self.shouldShowLanguageChoice || self.preferredLanguageChoice != .other
+    }
+
+    private var shouldShowAlternativeModels: Bool {
+        !self.shouldShowLanguageChoice || self.preferredLanguageChoice == .other
+    }
+
+    private var parakeetV3LanguageNames: String {
+        "Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French, German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian, Slovak, Slovenian, Spanish, Swedish, Russian, and Ukrainian"
+    }
+
+    private var isRecommendedModelSelected: Bool {
+        self.isOnboardingModelSelected(self.recommendedOnboardingModel)
+    }
+
+    private var isRecommendedModelDownloaded: Bool {
+        self.isOnboardingModelDownloaded(self.recommendedOnboardingModel)
+    }
+
+    private var isPreparingRecommendedModel: Bool {
+        self.isPreparingOnboardingModel(self.recommendedOnboardingModel)
+    }
+
+    private var isRecommendedModelReady: Bool {
+        self.isOnboardingModelReady(self.recommendedOnboardingModel)
+    }
+
+    private var isVoiceModelReady: Bool {
+        self.isOnboardingModelReady(self.settings.selectedSpeechModel)
+    }
+
+    private var isMicrophoneReady: Bool {
+        self.asr.micStatus == .authorized
+    }
+
+    private var isAccessibilityReady: Bool {
+        self.accessibilityEnabled
+    }
+
+    private var isAIReady: Bool {
+        self.settings.onboardingAISkipped || DictationAIPostProcessingGate.isConfigured()
+    }
+
+    private var isPlaygroundReady: Bool {
+        self.settings.onboardingPlaygroundValidated
+    }
+
+    private var onboardingShortcutDisplay: String {
+        let display = self.settings.hotkeyShortcut.displayString.trimmingCharacters(in: .whitespacesAndNewlines)
+        return display.isEmpty ? "your shortcut" : display
+    }
+
+    private var canContinue: Bool {
+        switch self.step {
+        case .voiceModel:
+            return self.isVoiceModelReady
+        case .microphone:
+            return self.isMicrophoneReady
+        case .accessibility:
+            return self.isAccessibilityReady
+        case .aiEnhancement:
+            return self.isAIReady
+        case .playground:
+            return self.isPlaygroundReady
+        }
+    }
+
+    private var primaryButtonTitle: String {
+        switch self.step {
+        case .playground:
+            return "Finish Setup"
+        default:
+            return "Continue"
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            self.header
+            Divider()
+            self.stepContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            Divider()
+            self.footer
+        }
+        .background {
+            ZStack {
+                self.theme.palette.windowBackground
+                    .opacity(0.98)
+                    .ignoresSafeArea()
+
+                Rectangle()
+                    .fill(self.theme.materials.window)
+                    .opacity(0.75)
+                    .ignoresSafeArea()
+            }
+        }
+        .onAppear {
+            self.syncPreferredLanguageChoiceWithSelectedModel()
+            Task { @MainActor in
+                self.asr.micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+                await self.asr.checkIfModelsExistAsync()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            self.asr.micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Welcome to FluidVoice")
+                .font(.title2.weight(.bold))
+                .foregroundStyle(self.theme.palette.primaryText)
+
+            Text(self.step.subtitle)
+                .font(.subheadline)
+                .foregroundStyle(self.theme.palette.secondaryText)
+
+            HStack {
+                Text("Step \(self.step.rawValue + 1) of \(Step.allCases.count)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(self.step.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(self.theme.palette.accent)
+            }
+
+            ProgressView(value: self.progressValue)
+                .tint(self.theme.palette.accent)
+        }
+        .padding(24)
+    }
+
+    @ViewBuilder
+    private var stepContent: some View {
+        switch self.step {
+        case .voiceModel:
+            self.voiceModelStep
+        case .microphone:
+            self.microphoneStep
+        case .accessibility:
+            self.accessibilityStep
+        case .aiEnhancement:
+            self.aiEnhancementStep
+        case .playground:
+            self.playgroundStep
+        }
+    }
+
+    private var voiceModelStep: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                ThemedCard(style: .standard) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if self.shouldShowLanguageChoice {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Preferred language")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(self.theme.palette.primaryText)
+
+                                Text("Pick the path that matches how you usually speak. You can change models later.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                HStack(spacing: 10) {
+                                    ForEach(PreferredLanguageChoice.allCases) { option in
+                                        self.preferredLanguageOptionCard(for: option)
+                                    }
+                                }
+                            }
+
+                            Divider().padding(.vertical, 2)
+                        }
+
+                        HStack(spacing: 10) {
+                            Image(systemName: self.isVoiceModelReady ? "checkmark.circle.fill" : "cpu")
+                                .foregroundStyle(self.isVoiceModelReady ? Color.fluidGreen : self.theme.palette.accent)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(self.recommendedModelHeadline)
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(self.theme.palette.primaryText)
+
+                                Text(self.recommendedModelReasonText)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+                        }
+
+                        if self.showsMappedRecommendedModel {
+                            HStack(spacing: 10) {
+                                Label(self.recommendedOnboardingModel.downloadSize, systemImage: "internaldrive")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                Text(self.recommendedOnboardingModel.languageSupport)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            if self.recommendedOnboardingModel == .parakeetTDT {
+                                Text("Supported languages: \(self.parakeetV3LanguageNames)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if self.isPreparingRecommendedModel {
+                            VStack(alignment: .leading, spacing: 6) {
+                                if self.asr.isDownloadingModel, let progress = self.asr.downloadProgress {
+                                    if progress >= 0.82 {
+                                        HStack(spacing: 8) {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                            Text("Finalizing download and loading model…")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    } else {
+                                        ProgressView(value: progress)
+                                            .tint(self.theme.palette.accent)
+                                        Text("Downloading \(Int(progress * 100))%")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                } else {
+                                    HStack(spacing: 8) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                        Text("Loading model…")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+
+                        HStack(spacing: 10) {
+                            if self.isRecommendedModelReady {
+                                Label(
+                                    "Model downloaded and loaded",
+                                    systemImage: "checkmark.seal.fill"
+                                )
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Color.fluidGreen)
+                            } else if self.isRecommendedModelDownloaded {
+                                Label(
+                                    self.isRecommendedModelSelected ? "Model downloaded. Click to finish loading." : "Model downloaded",
+                                    systemImage: "arrow.triangle.2.circlepath"
+                                )
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            } else {
+                                Label("Model not downloaded yet", systemImage: "arrow.down.circle")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            if self.preferredLanguageChoice == .other && self.shouldShowLanguageChoice {
+                                Text("Choose a model from the options below.")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Button(self.onboardingModelActionButtonTitle(for: self.recommendedOnboardingModel)) {
+                                    self.prepareOnboardingModel(self.recommendedOnboardingModel)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(self.theme.palette.accent)
+                                .disabled(self.asr.isRunning || self.isPreparingRecommendedModel || self.isRecommendedModelReady)
+                            }
+                        }
+
+                        if self.isVoiceModelReady && !self.isRecommendedModelSelected && self.preferredLanguageChoice != .other {
+                            Text("A different model is already configured. You can continue, or switch to the recommended model.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if self.shouldShowAlternativeModels && !self.onboardingAlternativeModels.isEmpty {
+                            Divider().padding(.vertical, 2)
+
+                            Text("Other popular options")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(self.theme.palette.primaryText)
+
+                            VStack(spacing: 8) {
+                                ForEach(Array(self.onboardingAlternativeModels.prefix(3))) { model in
+                                    self.onboardingModelOptionRow(for: model)
+                                }
+                            }
+                        }
+
+                        Text("You can switch models later in Voice Engine settings.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(16)
+                }
+            }
+            .padding(24)
+        }
+    }
+
+    private var microphoneStep: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                ThemedCard(style: .standard) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(self.isMicrophoneReady ? Color.fluidGreen : self.theme.palette.warning)
+                                .frame(width: 10, height: 10)
+
+                            Text(self.isMicrophoneReady ? "Microphone access granted" : "Microphone access required")
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(self.isMicrophoneReady ? .primary : self.theme.palette.warning)
+
+                            Spacer()
+
+                            if !self.isMicrophoneReady {
+                                Button(self.microphoneActionButtonTitle) {
+                                    self.handleMicrophoneAction()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(self.theme.palette.accent)
+                            }
+                        }
+
+                        if !self.isMicrophoneReady {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("How to enable microphone access")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+
+                                if self.asr.micStatus == .notDetermined {
+                                    Text("1. Click \"Grant Access\"")
+                                    Text("2. Choose \"Allow\" in the system dialog")
+                                } else {
+                                    Text("1. Click \"Open Settings\"")
+                                    Text("2. Find FluidVoice in the microphone list")
+                                    Text("3. Toggle FluidVoice on")
+                                }
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(16)
+                }
+            }
+            .padding(24)
+        }
+    }
+
+    private var accessibilityStep: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                ThemedCard(style: .standard) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(self.isAccessibilityReady ? Color.fluidGreen : self.theme.palette.warning)
+                                .frame(width: 10, height: 10)
+
+                            Text(self.isAccessibilityReady ? "Accessibility enabled" : "Accessibility permission required")
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(self.isAccessibilityReady ? .primary : self.theme.palette.warning)
+
+                            Spacer()
+
+                            if !self.isAccessibilityReady {
+                                Button("Enable Accessibility") {
+                                    self.openAccessibilitySettings()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(self.theme.palette.accent)
+                            }
+                        }
+
+                        if !self.isAccessibilityReady {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("How to enable accessibility")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Text("1. Click \"Enable Accessibility\"")
+                                Text("2. Add or enable FluidVoice in Accessibility")
+                                Text("3. Return here and continue")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(16)
+                }
+            }
+            .padding(24)
+        }
+    }
+
+    private var aiEnhancementStep: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: self.isAIReady ? "checkmark.circle.fill" : "sparkles")
+                    .foregroundStyle(self.isAIReady ? Color.fluidGreen : self.theme.palette.accent)
+                Text(self.isAIReady
+                    ? "AI enhancement is ready (or skipped)"
+                    : "Configure AI enhancement or skip to continue")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(self.isAIReady ? Color.fluidGreen : .secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 16)
+
+            AIEnhancementSettingsScreen(menuBarManager: self.menuBarManager, theme: self.theme)
+        }
+    }
+
+    private var playgroundStep: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                ThemedCard(style: .standard) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Text("Quick Playground Test")
+                                .font(.headline)
+                            Spacer()
+                            if self.asr.isRunning {
+                                Text("Recording...")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.red)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Press Start Recording or use \(self.onboardingShortcutDisplay), then stop and confirm your text appears below.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            Button(self.asr.isRunning ? "Stop Recording" : "Start Recording") {
+                                self.togglePlaygroundRecording()
+                            }
+                            .buttonStyle(PremiumButtonStyle(isRecording: self.asr.isRunning))
+                            .disabled(self.asr.micStatus != .authorized)
+                        }
+
+                        TextEditor(text: Binding(
+                            get: { self.asr.finalText },
+                            set: { self.asr.finalText = $0 }
+                        ))
+                        .font(.body)
+                        .frame(height: 170)
+                        .padding(10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(self.theme.palette.cardBackground)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(self.theme.palette.cardBorder.opacity(0.6), lineWidth: 1)
+                                )
+                        )
+                        .scrollContentBackground(.hidden)
+
+                        if self.isPlaygroundReady {
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(Color.fluidGreen)
+                                Text("Playground test passed. You can finish setup.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Text("Record a short sample with the button or your hotkey and confirm transcription appears here.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(16)
+                }
+            }
+            .padding(24)
+        }
+        .onChange(of: self.asr.finalText) { _, newValue in
+            if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.markPlaygroundValidated()
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            if self.step.rawValue > 0 {
+                Button("Back") {
+                    self.goBack()
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Spacer()
+
+            if self.step == .aiEnhancement {
+                Button("Skip this step") {
+                    self.markAISkipped()
+                    self.goNext()
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Button(self.primaryButtonTitle) {
+                self.handlePrimaryAction()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(self.theme.palette.accent)
+            .disabled(!self.canContinue)
+        }
+        .padding(20)
+    }
+
+    private var microphoneActionButtonTitle: String {
+        switch self.asr.micStatus {
+        case .notDetermined:
+            return "Grant Access"
+        case .denied, .restricted:
+            return "Open Settings"
+        default:
+            return "Grant Access"
+        }
+    }
+
+    private func isOnboardingModelSelected(_ model: SettingsStore.SpeechModel) -> Bool {
+        self.settings.selectedSpeechModel == model
+    }
+
+    private func isOnboardingModelReady(_ model: SettingsStore.SpeechModel) -> Bool {
+        self.isOnboardingModelSelected(model) && model.isInstalled && self.asr.isAsrReady
+    }
+
+    private func isOnboardingModelDownloaded(_ model: SettingsStore.SpeechModel) -> Bool {
+        model.isInstalled || (self.isOnboardingModelSelected(model) && (self.asr.isAsrReady || self.asr.modelsExistOnDisk))
+    }
+
+    private func isPreparingOnboardingModel(_ model: SettingsStore.SpeechModel) -> Bool {
+        self.isOnboardingModelSelected(model) && (self.asr.isDownloadingModel || (self.asr.isLoadingModel && !self.asr.isAsrReady))
+    }
+
+    private func onboardingModelActionButtonTitle(for model: SettingsStore.SpeechModel) -> String {
+        let isSelected = self.isOnboardingModelSelected(model)
+        let isDownloaded = self.isOnboardingModelDownloaded(model)
+        let isReady = self.isOnboardingModelReady(model)
+
+        if self.isPreparingOnboardingModel(model) {
+            return self.asr.isLoadingModel ? "Loading..." : "Downloading..."
+        }
+        if isReady {
+            return "Ready"
+        }
+        if isDownloaded {
+            return isSelected ? "Load" : "Use"
+        }
+        return "Use & Download"
+    }
+
+    private func prepareOnboardingModel(_ model: SettingsStore.SpeechModel, preserveManualChoice: Bool = false) {
+        guard !self.asr.isRunning else { return }
+
+        self.selectOnboardingModel(model, preserveManualChoice: preserveManualChoice)
+
+        Task { @MainActor in
+            do {
+                try await self.asr.ensureAsrReady()
+            } catch {
+                DebugLogger.shared.error("Failed to prepare onboarding voice model \(model.displayName): \(error)", source: "OnboardingFlowView")
+            }
+            await self.asr.checkIfModelsExistAsync()
+        }
+    }
+
+    private func onboardingModelOptionRow(for model: SettingsStore.SpeechModel) -> some View {
+        let isSelected = self.isOnboardingModelSelected(model)
+        let isDownloaded = self.isOnboardingModelDownloaded(model)
+        let isPreparing = self.isPreparingOnboardingModel(model)
+        let isReady = self.isOnboardingModelReady(model)
+
+        return Button {
+            self.selectOnboardingModel(model, preserveManualChoice: true)
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.displayName)
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(self.theme.palette.primaryText)
+
+                        Text(model.cardDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+
+                        HStack(spacing: 10) {
+                            Label(model.downloadSize, systemImage: "internaldrive")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(model.languageSupport)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if model == .parakeetTDT {
+                            Text("Supported languages: \(self.parakeetV3LanguageNames)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button(self.onboardingModelActionButtonTitle(for: model)) {
+                        self.prepareOnboardingModel(model, preserveManualChoice: true)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(self.asr.isRunning || isPreparing || isReady)
+                }
+
+                if isPreparing {
+                    if self.asr.isDownloadingModel, let progress = self.asr.downloadProgress {
+                        if progress >= 0.82 {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                Text("Finalizing...")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            ProgressView(value: progress)
+                                .tint(self.theme.palette.accent)
+                            Text("Downloading \(Int(progress * 100))%")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("Loading model...")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if isReady {
+                    Label("Downloaded and loaded", systemImage: "checkmark.circle.fill")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.fluidGreen)
+                } else if isDownloaded {
+                    Label(isSelected ? "Downloaded. Click Load to finish." : "Downloaded", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(self.theme.palette.cardBackground.opacity(isSelected ? 0.82 : 0.55))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(
+                                isSelected ? self.theme.palette.accent.opacity(0.45) : self.theme.palette.cardBorder.opacity(0.32),
+                                lineWidth: 1
+                            )
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func selectOnboardingModel(_ model: SettingsStore.SpeechModel, preserveManualChoice: Bool = false) {
+        if self.settings.selectedSpeechModel != model {
+            self.settings.selectedSpeechModel = model
+            self.asr.resetTranscriptionProvider()
+        }
+        if preserveManualChoice, self.preferredLanguageChoice == .other {
+            return
+        }
+        self.syncPreferredLanguageChoiceWithSelectedModel()
+    }
+
+    private var recommendedModelHeadline: String {
+        if self.shouldShowLanguageChoice {
+            switch self.preferredLanguageChoice {
+            case .englishOnly:
+                return "English only uses \(self.recommendedOnboardingModelDisplayName)"
+            case .multipleLanguages:
+                return "Multiple languages uses \(self.recommendedOnboardingModelDisplayName)"
+            case .other:
+                return "Other languages or workflows"
+            }
+        }
+
+        return "Recommended for this Mac: \(self.recommendedOnboardingModelDisplayName)"
+    }
+
+    private func preferredLanguageOptionCard(for option: PreferredLanguageChoice) -> some View {
+        let isSelected = self.preferredLanguageChoice == option
+
+        return Button {
+            self.preferredLanguageChoice = option
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(option.title)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(self.theme.palette.primaryText)
+
+                    if option != .other {
+                        Text("FluidVoice Recommended")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(self.theme.palette.accent.opacity(0.18)))
+                            .foregroundStyle(self.theme.palette.accent)
+                    }
+                }
+
+                Text(option.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(self.theme.palette.cardBackground.opacity(isSelected ? 0.82 : 0.55))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(
+                                isSelected ? self.theme.palette.accent.opacity(0.55) : self.theme.palette.cardBorder.opacity(0.32),
+                                lineWidth: 1
+                            )
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func syncPreferredLanguageChoiceWithSelectedModel() {
+        guard self.shouldShowLanguageChoice else { return }
+
+        switch self.settings.selectedSpeechModel {
+        case .parakeetTDTv2:
+            self.preferredLanguageChoice = .englishOnly
+        case .parakeetTDT:
+            self.preferredLanguageChoice = .multipleLanguages
+        default:
+            self.preferredLanguageChoice = .other
+        }
+    }
+
+    private func handleMicrophoneAction() {
+        if self.asr.micStatus == .notDetermined {
+            self.asr.requestMicAccess()
+        } else {
+            self.asr.openSystemSettingsForMic()
+        }
+    }
+
+    private func goBack() {
+        self.currentStep = max(0, self.currentStep - 1)
+    }
+
+    private func goNext() {
+        self.currentStep = min(Step.allCases.count - 1, self.currentStep + 1)
+    }
+
+    private func handlePrimaryAction() {
+        if self.step == .playground {
+            if !self.settings.onboardingPlaygroundValidated {
+                self.markPlaygroundValidated()
+            }
+            self.finishOnboarding()
+            return
+        }
+        self.goNext()
+    }
+
+    private func togglePlaygroundRecording() {
+        Task { @MainActor in
+            if self.asr.isRunning {
+                let transcribed = await self.asr.stop()
+                self.asr.finalText = ASRService.applyGAAVFormatting(transcribed)
+                if !self.asr.finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.markPlaygroundValidated()
+                }
+            } else {
+                self.asr.finalText = ""
+                await self.asr.start()
+            }
         }
     }
 }

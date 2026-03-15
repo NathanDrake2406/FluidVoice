@@ -12,6 +12,8 @@ enum SimpleUpdateError: Error, LocalizedError {
     case unzipFailed
     case notAnAppBundle
     case codesignMismatch
+    case rollbackUnavailable
+    case rollbackRestoreFailed
 
     var errorDescription: String? {
         switch self {
@@ -24,6 +26,8 @@ enum SimpleUpdateError: Error, LocalizedError {
         case .unzipFailed: return "Failed to extract the update archive."
         case .notAnAppBundle: return "Extracted content does not contain an app bundle."
         case .codesignMismatch: return "Downloaded app’s code signature does not match current app."
+        case .rollbackUnavailable: return "No rollback backup is available."
+        case .rollbackRestoreFailed: return "Failed to restore a previous version."
         }
     }
 }
@@ -41,12 +45,94 @@ struct GHRelease: Decodable {
     let body: String?
     let name: String?
     let published_at: String?
+    let html_url: URL?
 }
 
 @MainActor
 final class SimpleUpdater {
+    struct ReleaseBuildOption {
+        let version: String
+        let url: URL
+    }
+
     static let shared = SimpleUpdater()
     private init() {}
+
+    private let fileManager = FileManager.default
+    private let maxRollbackBackups = 3
+    private let rollbackBackupDirectoryName = "RollbackBackups"
+
+    private var installedAppName: String {
+        return Bundle.main.bundleURL.deletingPathExtension().lastPathComponent
+    }
+
+    func hasRollbackBackup() -> Bool {
+        return !self.availableRollbackBackups().isEmpty
+    }
+
+    func latestRollbackVersion() -> String? {
+        guard let latest = self.latestRollbackBackup() else { return nil }
+        return self.versionString(for: latest)
+    }
+
+    func rollbackToLatestBackup() async throws {
+        guard let rollbackBundleURL = self.latestRollbackBackup() else {
+            throw SimpleUpdateError.rollbackUnavailable
+        }
+
+        self.createRollbackBackup(beforeRollback: true)
+
+        do {
+            try self.performSwapAndRelaunch(
+                installedAppURL: Bundle.main.bundleURL,
+                downloadedAppURL: rollbackBundleURL
+            )
+            DebugLogger.shared.info(
+                "SimpleUpdater: Rolled back to \(rollbackBundleURL.lastPathComponent)",
+                source: "SimpleUpdater"
+            )
+        } catch {
+            throw SimpleUpdateError.rollbackRestoreFailed
+        }
+    }
+
+    func fetchRecentReleaseBuildOptions(owner: String, repo: String, limit: Int = 3) async throws -> [ReleaseBuildOption] {
+        guard let releasesURL = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/releases") else {
+            throw SimpleUpdateError.invalidURL
+        }
+
+        let (data, response) = try await URLSession.shared.data(from: releasesURL)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw SimpleUpdateError.invalidResponse
+        }
+
+        let releases: [GHRelease]
+        do {
+            releases = try JSONDecoder().decode([GHRelease].self, from: data)
+        } catch {
+            throw SimpleUpdateError.jsonDecoding
+        }
+
+        let count = max(1, limit)
+        let stableReleases = releases.filter { !$0.prerelease }.prefix(count)
+
+        return stableReleases.map { release in
+            let zipAsset = release.assets.first {
+                $0.content_type == "application/zip" ||
+                    $0.content_type == "application/x-zip-compressed" ||
+                    $0.name.lowercased().hasSuffix(".zip")
+            }
+            let fallbackTagURL = URL(string: "https://github.com/\(owner)/\(repo)/releases/tag/\(release.tag_name)")
+            let fallbackReleasesURL = URL(string: "https://github.com/\(owner)/\(repo)/releases")
+            let url = zipAsset?.browser_download_url ??
+                release.html_url ??
+                fallbackTagURL ??
+                fallbackReleasesURL ??
+                URL(fileURLWithPath: "/")
+            return ReleaseBuildOption(version: release.tag_name, url: url)
+        }
+    }
+
     // Allowed Apple Developer Team IDs for code-sign validation
     // Configured per your request; restrict to your actual Team ID only.
     private let allowedTeamIDs: Set<String> = [
@@ -141,14 +227,15 @@ final class SimpleUpdater {
         let latestTag = latest.tag_name
         let latestVersion = self.parseVersion(latestTag)
 
+        let currentBundle = Bundle.main
         // up to date
         if !self.isVersion(latestVersion, greaterThan: current) {
             throw PMKError.cancelled // mimic AppUpdater semantics for up-to-date
         }
 
-        // Find asset matching: "{repo-lower}-{version-no-v}.*" and zip preferred
-        let verString = self.versionString(latestVersion)
-        let prefix = "\(repo.lowercased())-\(verString)"
+        // Find asset matching: "{repo-lower}-{version-from-tag}.*" and zip preferred
+        let rawVersion = latestTag.hasPrefix("v") ? String(latestTag.dropFirst()) : latestTag
+        let prefix = "\(repo.lowercased())-\(rawVersion)"
         let asset = latest.assets.first { asset in
             let base = (asset.name as NSString).deletingPathExtension.lowercased()
             return (base == prefix) &&
@@ -188,7 +275,6 @@ final class SimpleUpdater {
         }
 
         // Validate code signing identity matches (skip in DEBUG for easier local testing)
-        let currentBundle = Bundle.main
         #if DEBUG
         // In Debug builds the local app is typically signed with a development cert, while
         // releases are signed with Developer ID. Skip strict check to enable testing.
@@ -230,11 +316,115 @@ final class SimpleUpdater {
         }
         #endif
 
+        self.createRollbackBackup(beforeRollback: false)
+
         // Replace and relaunch
         try self.performSwapAndRelaunch(installedAppURL: currentBundle.bundleURL, downloadedAppURL: extractedBundleURL)
     }
 
     // MARK: - Helpers
+
+    private func rollbackRootDirectory() -> URL {
+        let base = self.fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let support = base ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        return support
+            .appendingPathComponent("Fluid", isDirectory: true)
+            .appendingPathComponent(self.rollbackBackupDirectoryName, isDirectory: true)
+            .appendingPathComponent(self.installedAppName, isDirectory: true)
+    }
+
+    private func availableRollbackBackups() -> [URL] {
+        let backupDir = self.rollbackRootDirectory()
+        guard self.fileManager.fileExists(atPath: backupDir.path) else { return [] }
+
+        let urls: [URL]
+        do {
+            urls = try self.fileManager.contentsOfDirectory(
+                at: backupDir,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            return []
+        }
+
+        return urls
+            .filter { $0.pathExtension == "app" }
+            .compactMap { url in
+                (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate.map { (url, $0) }
+            }
+            .sorted { $0.1 > $1.1 }
+            .map { $0.0 }
+    }
+
+    private func latestRollbackBackup() -> URL? {
+        return self.availableRollbackBackups().first
+    }
+
+    private func versionString(for appURL: URL) -> String? {
+        guard let bundle = Bundle(url: appURL) else { return nil }
+        return bundle.infoDictionary?["CFBundleShortVersionString"] as? String
+    }
+
+    private func sanitizeVersion(_ version: String) -> String {
+        return version
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+    }
+
+    private func createRollbackBackup(beforeRollback: Bool) {
+        let currentAppVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let appURL = Bundle.main.bundleURL
+        let backupRoot = self.rollbackRootDirectory()
+
+        do {
+            try self.fileManager.createDirectory(
+                at: backupRoot,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            DebugLogger.shared.warning("SimpleUpdater: Failed to create rollback backup folder: \(error.localizedDescription)", source: "SimpleUpdater")
+            return
+        }
+
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let safeVersion = self.sanitizeVersion(currentAppVersion)
+        let backupName = beforeRollback
+            ? "\(self.installedAppName)-\(safeVersion)-rollback-\(timestamp).app"
+            : "\(self.installedAppName)-\(safeVersion)-\(timestamp).app"
+        let backupURL = backupRoot.appendingPathComponent(backupName)
+
+        do {
+            try self.fileManager.copyItem(at: appURL, to: backupURL)
+            self.pruneRollbackBackups()
+            DebugLogger.shared.info(
+                "SimpleUpdater: Created rollback backup at \(backupURL.path)",
+                source: "SimpleUpdater"
+            )
+        } catch {
+            DebugLogger.shared.warning(
+                "SimpleUpdater: Failed to create rollback backup: \(error.localizedDescription)",
+                source: "SimpleUpdater"
+            )
+        }
+    }
+
+    private func pruneRollbackBackups() {
+        let backups = self.availableRollbackBackups()
+        guard backups.count > self.maxRollbackBackups else { return }
+
+        for oldBackup in backups.dropFirst(self.maxRollbackBackups) {
+            do {
+                try self.fileManager.removeItem(at: oldBackup)
+            } catch {
+                DebugLogger.shared.warning(
+                    "SimpleUpdater: Failed to remove old rollback backup \(oldBackup.lastPathComponent): \(error.localizedDescription)",
+                    source: "SimpleUpdater"
+                )
+            }
+        }
+    }
 
     private func parseVersion(_ s: String) -> [Int] {
         var t = s.hasPrefix("v") ? String(s.dropFirst()) : s

@@ -15,14 +15,14 @@ enum AIConnectionStatus {
 }
 
 enum PromptEditorMode: Identifiable, Equatable {
-    case defaultPrompt
-    case newPrompt
+    case defaultPrompt(mode: SettingsStore.PromptMode)
+    case newPrompt(prefillMode: SettingsStore.PromptMode)
     case edit(promptID: String)
 
     var id: String {
         switch self {
-        case .defaultPrompt: return "default"
-        case .newPrompt: return "new"
+        case let .defaultPrompt(mode): return "default:\(mode.rawValue)"
+        case let .newPrompt(prefillMode): return "new:\(prefillMode.rawValue)"
         case let .edit(promptID): return "edit:\(promptID)"
         }
     }
@@ -35,6 +35,14 @@ enum PromptEditorMode: Identifiable, Equatable {
     var editingPromptID: String? {
         if case let .edit(promptID) = self { return promptID }
         return nil
+    }
+
+    var mode: SettingsStore.PromptMode? {
+        switch self {
+        case let .defaultPrompt(mode): return mode
+        case let .newPrompt(prefillMode): return prefillMode
+        case .edit: return nil
+        }
     }
 }
 

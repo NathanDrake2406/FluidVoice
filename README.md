@@ -98,7 +98,7 @@ https://discord.gg/VUPHaKSvYV
 ```bash
 git clone https://github.com/altic-dev/Fluid-oss.git
 cd Fluid-oss
-open FluidVoice.xcodeproj
+open Fluid.xcodeproj
 ```
 
 Build and run in Xcode. All dependencies are managed via Swift Package Manager.
@@ -120,13 +120,18 @@ Contributions are welcome! Please create an issue first to discuss any major cha
    open Fluid.xcodeproj
    ```
 
-3. **Configure your Team ID:**
-   - Select the project in Xcode's navigator
-   - Go to "Signing & Capabilities" tab
-   - Select your Apple Developer Team from the dropdown
-   - Xcode will save this locally in `xcuserdata/` (which is gitignored)
+3. **Run from Xcode (one-time signing setup):**
+   - Target: `FluidVoice` → `Signing & Capabilities`
+   - Enable `Automatically manage signing`
+   - Pick your `Team` (Personal Team is fine)
+   - This is stored in `xcuserdata/` (gitignored), so it won’t affect your PR
 
 4. **Build and run** - All dependencies are managed via Swift Package Manager
+
+5. **Build only (no signing):**
+   ```bash
+   xcodebuild -project Fluid.xcodeproj -scheme Fluid -destination 'platform=macOS' build CODE_SIGNING_ALLOWED=NO
+   ```
 
 5. **(Optional) Install pre-commit hook** to prevent accidental team ID commits:
    ```bash
@@ -164,8 +169,46 @@ CI uses unsigned builds:
 xcodebuild test -project Fluid.xcodeproj -scheme Fluid -destination 'platform=macOS' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 ```
 
+## Privacy & Analytics
+
+FluidVoice is designed to be local-first, but it includes optional anonymous analytics, solely to keep track of FV usage and future feature development.
+
+### What this helps with
+- Feature usage patterns (for example dictation, command mode, and write mode)
+- Product reliability and performance tuning
+- Anonymous release health signals to prioritize fixes and improvements
+
+### What is collected
+- App version, build, and macOS version
+- Low-cardinality feature/config flags (for example app mode and major settings)
+- Approximate usage ranges (not exact values)
+- High-level success/error outcomes
+
+### What is not collected
+- Your voice, Raw audio or transcribed text
+- Selected text, prompts, or AI-generated responses
+- Terminal commands or outputs
+- Window titles, file names/paths, clipboard content, or typed content
+- or ANYTHING personal or private information. 
+
+### How to disable
+Analytics are enabled by default. You can disable or re-enable them at any time from:
+
+`Settings → Share Anonymous Analytics`
+
+### Why this exists
+Anonymous telemetry helps us understand what breaks, where performance can be improved, and which features matter most without collecting personal content.
+This helps us continue building what users want and if we should even continue developing features for you. 
+
+## License History
+
+- Versions before **2026-02-23**: Apache License 2.0
+- Versions on and after **2026-02-23**: GNU General Public License v3.0 (GPLv3)
+
 ## License
 
-This project is licensed under the [Apache License 2.0](LICENSE).
+From 2026-02-23 onward, this project is licensed under the [GNU General Public License, Version 3.0 (GPLv3)](LICENSE).
+
+Versions published before this date were licensed under Apache License 2.0.
 
 ---

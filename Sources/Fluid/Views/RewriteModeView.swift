@@ -25,7 +25,7 @@ struct RewriteModeView: View {
                 Image(systemName: "pencil.and.outline")
                     .font(.title2)
                     .foregroundStyle(self.theme.palette.accent)
-                Text("Write Mode")
+                Text("Edit Mode")
                     .font(.title2)
                     .fontWeight(.bold)
 
@@ -38,6 +38,19 @@ struct RewriteModeView: View {
                 .buttonStyle(.plain)
             }
             .padding()
+            .background(self.theme.palette.windowBackground)
+
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(self.theme.palette.secondaryText)
+                Text("Edit Mode is powered by Custom Prompts.")
+                    .font(.caption)
+                    .foregroundStyle(self.theme.palette.secondaryText)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 8)
             .background(self.theme.palette.windowBackground)
 
             // How To (collapsible)
@@ -79,7 +92,7 @@ struct RewriteModeView: View {
                             Image(systemName: "text.bubble")
                                 .font(.system(size: 48))
                                 .foregroundStyle(self.theme.palette.accent)
-                            Text("Write Mode")
+                            Text("Edit Mode")
                                 .font(.title2)
                                 .fontWeight(.bold)
                             Text("Ask the AI to write anything for you - emails, replies, summaries, answers, and more.")
@@ -193,8 +206,8 @@ struct RewriteModeView: View {
                 // Input field (flexible)
                 TextField(
                     self.service.originalText.isEmpty
-                        ? "Ask me to write anything..."
-                        : "How should I rewrite this?",
+                        ? "Ask me to write or edit..."
+                        : "How should I edit this?",
                     text: self.$inputText
                 )
                 .textFieldStyle(.roundedBorder)
@@ -334,9 +347,9 @@ struct RewriteModeView: View {
 
             if self.showHowTo {
                 VStack(alignment: .leading, spacing: 12) {
-                    // Write fresh
+                    // Create new text
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("To Write Fresh")
+                        Text("Create New Text")
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundStyle(.secondary)
@@ -360,9 +373,9 @@ struct RewriteModeView: View {
                         self.howToItem("\"Draft a thank you note\"")
                     }
 
-                    // Rewrite
+                    // Edit selected text
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("To Rewrite/Edit")
+                        Text("Edit Selected Text")
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundStyle(.secondary)

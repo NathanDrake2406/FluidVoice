@@ -9,6 +9,19 @@ import AppKit
 import Combine
 import SwiftUI
 
+private enum OverlayShortcutResolver {
+    static func shortcutDisplay(for mode: OverlayMode, settings: SettingsStore = .shared) -> String {
+        switch mode {
+        case .dictation:
+            return settings.hotkeyShortcut.displayString
+        case .edit, .write, .rewrite:
+            return settings.rewriteModeHotkeyShortcut.displayString
+        case .command:
+            return settings.commandModeHotkeyShortcut.displayString
+        }
+    }
+}
+
 // MARK: - Bottom Overlay Window Controller
 
 @MainActor
@@ -18,6 +31,8 @@ final class BottomOverlayWindowController {
     private var window: NSPanel?
     private var audioSubscription: AnyCancellable?
     private var pendingResizeWorkItem: DispatchWorkItem?
+    private var localMouseDownMonitor: Any?
+    private var globalMouseDownMonitor: Any?
 
     private init() {
         NotificationCenter.default.addObserver(forName: NSNotification.Name("OverlayOffsetChanged"), object: nil, queue: .main) { [weak self] _ in
@@ -27,7 +42,7 @@ final class BottomOverlayWindowController {
         }
         NotificationCenter.default.addObserver(forName: NSNotification.Name("OverlaySizeChanged"), object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.updateSizeAndPosition()
+                self?.scheduleSizeAndPositionUpdate(after: 0)
             }
         }
     }
@@ -36,9 +51,17 @@ final class BottomOverlayWindowController {
         self.pendingResizeWorkItem?.cancel()
         self.pendingResizeWorkItem = nil
         BottomOverlayPromptMenuController.shared.hide()
+        BottomOverlayModeMenuController.shared.hide()
+        BottomOverlayActionsMenuController.shared.hide()
+        self.ensureMouseDownMonitors()
 
         // Update mode in content state
         NotchContentState.shared.mode = mode
+        switch mode {
+        case .dictation: NotchContentState.shared.promptPickerMode = .dictate
+        case .edit, .write, .rewrite: NotchContentState.shared.promptPickerMode = .edit
+        case .command: break
+        }
         NotchContentState.shared.updateTranscription("")
         NotchContentState.shared.bottomOverlayAudioLevel = 0
 
@@ -75,7 +98,10 @@ final class BottomOverlayWindowController {
         self.audioSubscription = nil
         self.pendingResizeWorkItem?.cancel()
         self.pendingResizeWorkItem = nil
+        self.removeMouseDownMonitors()
         BottomOverlayPromptMenuController.shared.hide()
+        BottomOverlayModeMenuController.shared.hide()
+        BottomOverlayActionsMenuController.shared.hide()
 
         // Reset state
         NotchContentState.shared.setProcessing(false)
@@ -88,8 +114,8 @@ final class BottomOverlayWindowController {
             context.duration = 0.2
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             window.animator().alphaValue = 0
-        } completionHandler: { [weak self] in
-            self?.window?.orderOut(nil)
+        } completionHandler: {
+            window.orderOut(nil)
         }
     }
 
@@ -98,6 +124,10 @@ final class BottomOverlayWindowController {
     }
 
     func refreshSizeForContent() {
+        self.scheduleSizeAndPositionUpdate()
+    }
+
+    private func scheduleSizeAndPositionUpdate(after delay: TimeInterval = 0.03) {
         self.pendingResizeWorkItem?.cancel()
 
         // Debounce rapid streaming updates to avoid resize thrash.
@@ -105,7 +135,7 @@ final class BottomOverlayWindowController {
             self?.updateSizeAndPosition()
         }
         self.pendingResizeWorkItem = resizeWorkItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03, execute: resizeWorkItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: resizeWorkItem)
     }
 
     /// Update window size based on current SwiftUI content and re-position
@@ -165,6 +195,52 @@ final class BottomOverlayWindowController {
         panel.contentView = hostingView
 
         self.window = panel
+    }
+
+    private func ensureMouseDownMonitors() {
+        if self.localMouseDownMonitor == nil {
+            self.localMouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                let clickPoint: NSPoint
+                if let window = event.window {
+                    clickPoint = window.convertPoint(toScreen: event.locationInWindow)
+                } else {
+                    clickPoint = NSEvent.mouseLocation
+                }
+
+                Task { @MainActor [weak self] in
+                    self?.dismissMenusForClick(screenPoint: clickPoint)
+                }
+                return event
+            }
+        }
+
+        if self.globalMouseDownMonitor == nil {
+            self.globalMouseDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+                let clickPoint = NSEvent.mouseLocation
+                Task { @MainActor [weak self] in
+                    self?.dismissMenusForClick(screenPoint: clickPoint)
+                }
+            }
+        }
+    }
+
+    private func removeMouseDownMonitors() {
+        if let monitor = self.localMouseDownMonitor {
+            NSEvent.removeMonitor(monitor)
+            self.localMouseDownMonitor = nil
+        }
+        if let monitor = self.globalMouseDownMonitor {
+            NSEvent.removeMonitor(monitor)
+            self.globalMouseDownMonitor = nil
+        }
+    }
+
+    @MainActor
+    private func dismissMenusForClick(screenPoint: NSPoint) {
+        guard self.window?.isVisible == true else { return }
+        BottomOverlayPromptMenuController.shared.dismissIfNeeded(for: screenPoint)
+        BottomOverlayModeMenuController.shared.dismissIfNeeded(for: screenPoint)
+        BottomOverlayActionsMenuController.shared.dismissIfNeeded(for: screenPoint)
     }
 
     private func positionWindow() {
@@ -229,7 +305,7 @@ final class BottomOverlayPromptMenuController {
         self.selectorFrameInScreen = selectorFrameInScreen
         self.parentWindow = parentWindow
         self.menuMaxWidth = resolvedMaxWidth
-        self.menuGap = max(menuGap, 2)
+        self.menuGap = max(menuGap, 0)
 
         if self.menuWindow?.isVisible == true {
             if widthChanged {
@@ -241,13 +317,19 @@ final class BottomOverlayPromptMenuController {
     }
 
     func selectorHoverChanged(_ hovering: Bool) {
-        self.isHoveringSelector = hovering
-        self.updateVisibility()
+        // Hover-open disabled: menu is click/tap driven.
     }
 
     func menuHoverChanged(_ hovering: Bool) {
-        self.isHoveringMenu = hovering
-        self.updateVisibility()
+        // Hover-open disabled: menu is click/tap driven.
+    }
+
+    func toggleFromTap() {
+        if self.menuWindow?.isVisible == true {
+            self.hide()
+            return
+        }
+        self.showMenuIfPossible()
     }
 
     func hide() {
@@ -265,6 +347,15 @@ final class BottomOverlayPromptMenuController {
             parent.removeChildWindow(menuWindow)
         }
         self.menuWindow?.orderOut(nil)
+    }
+
+    func dismissIfNeeded(for screenPoint: NSPoint) {
+        guard self.menuWindow?.isVisible == true else { return }
+        let insideMenu = self.menuWindow?.frame.contains(screenPoint) ?? false
+        let insideSelector = self.selectorFrameInScreen.contains(screenPoint)
+        if !insideMenu, !insideSelector {
+            self.hide()
+        }
     }
 
     private func updateVisibility() {
@@ -353,6 +444,7 @@ final class BottomOverlayPromptMenuController {
         panel.animationBehavior = .none
 
         let contentView = BottomOverlayPromptMenuView(
+            promptMode: self.resolvedPromptMode(),
             maxWidth: self.menuMaxWidth,
             onHoverChanged: { [weak self] hovering in
                 self?.menuHoverChanged(hovering)
@@ -377,6 +469,7 @@ final class BottomOverlayPromptMenuController {
 
     private func updateMenuContent() {
         let rootView = BottomOverlayPromptMenuView(
+            promptMode: self.resolvedPromptMode(),
             maxWidth: self.menuMaxWidth,
             onHoverChanged: { [weak self] hovering in
                 self?.menuHoverChanged(hovering)
@@ -386,6 +479,17 @@ final class BottomOverlayPromptMenuController {
             }
         )
         self.hostingView?.rootView = rootView
+    }
+
+    private func resolvedPromptMode() -> SettingsStore.PromptMode {
+        switch NotchContentState.shared.mode {
+        case .dictation:
+            return .dictate
+        case .edit, .write, .rewrite:
+            return .edit
+        case .command:
+            return NotchContentState.shared.promptPickerMode.normalized
+        }
     }
 
     private func attachToParentWindowIfNeeded() {
@@ -408,7 +512,7 @@ final class BottomOverlayPromptMenuController {
         guard fittingSize.width > 0, fittingSize.height > 0 else { return }
 
         let preferredX = self.selectorFrameInScreen.midX - (fittingSize.width / 2)
-        let preferredY = self.selectorFrameInScreen.minY - self.menuGap - fittingSize.height
+        let preferredY = self.selectorFrameInScreen.maxY + self.menuGap
 
         let screen = self.parentWindow?.screen
             ?? NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: self.selectorFrameInScreen.midX, y: self.selectorFrameInScreen.midY)) })
@@ -450,58 +554,753 @@ final class BottomOverlayPromptMenuController {
     }
 }
 
-private struct BottomOverlayPromptMenuView: View {
+@MainActor
+final class BottomOverlayModeMenuController {
+    static let shared = BottomOverlayModeMenuController()
+
+    private var menuWindow: NSPanel?
+    private var hostingView: NSHostingView<BottomOverlayModeMenuView>?
+    private var selectorFrameInScreen: CGRect = .zero
+    private weak var parentWindow: NSWindow?
+    private var menuMaxWidth: CGFloat = 220
+    private var menuGap: CGFloat = 6
+
+    private var isHoveringSelector = false
+    private var isHoveringMenu = false
+    private var pendingShowWorkItem: DispatchWorkItem?
+    private var pendingHideWorkItem: DispatchWorkItem?
+    private var pendingPositionWorkItem: DispatchWorkItem?
+
+    private init() {}
+
+    func updateAnchor(selectorFrameInScreen: CGRect, parentWindow: NSWindow?, maxWidth: CGFloat, menuGap: CGFloat) {
+        guard selectorFrameInScreen.width > 0, selectorFrameInScreen.height > 0 else { return }
+
+        let resolvedMaxWidth = max(maxWidth, 120)
+        let widthChanged = abs(self.menuMaxWidth - resolvedMaxWidth) > 0.5
+
+        self.selectorFrameInScreen = selectorFrameInScreen
+        self.parentWindow = parentWindow
+        self.menuMaxWidth = resolvedMaxWidth
+        self.menuGap = max(menuGap, 0)
+
+        if self.menuWindow?.isVisible == true {
+            if widthChanged {
+                self.updateMenuContent()
+            }
+            self.attachToParentWindowIfNeeded()
+            self.scheduleMenuPositionUpdate()
+        }
+    }
+
+    func selectorHoverChanged(_ hovering: Bool) {
+        // Hover-open disabled: menu is click/tap driven.
+    }
+
+    func menuHoverChanged(_ hovering: Bool) {
+        // Hover-open disabled: menu is click/tap driven.
+    }
+
+    func toggleFromTap() {
+        if self.menuWindow?.isVisible == true {
+            self.hide()
+            return
+        }
+        self.showMenuIfPossible()
+    }
+
+    func hide() {
+        self.pendingShowWorkItem?.cancel()
+        self.pendingShowWorkItem = nil
+        self.pendingHideWorkItem?.cancel()
+        self.pendingHideWorkItem = nil
+        self.pendingPositionWorkItem?.cancel()
+        self.pendingPositionWorkItem = nil
+
+        self.isHoveringSelector = false
+        self.isHoveringMenu = false
+
+        if let menuWindow = self.menuWindow, let parent = menuWindow.parent {
+            parent.removeChildWindow(menuWindow)
+        }
+        self.menuWindow?.orderOut(nil)
+    }
+
+    func dismissIfNeeded(for screenPoint: NSPoint) {
+        guard self.menuWindow?.isVisible == true else { return }
+        let insideMenu = self.menuWindow?.frame.contains(screenPoint) ?? false
+        let insideSelector = self.selectorFrameInScreen.contains(screenPoint)
+        if !insideMenu, !insideSelector {
+            self.hide()
+        }
+    }
+
+    private func updateVisibility() {
+        let shouldShow = self.isHoveringSelector || self.isHoveringMenu
+
+        if shouldShow {
+            self.pendingHideWorkItem?.cancel()
+            self.pendingHideWorkItem = nil
+
+            if self.menuWindow?.isVisible == true {
+                self.scheduleMenuPositionUpdate()
+                return
+            }
+
+            self.pendingShowWorkItem?.cancel()
+            let showTask = DispatchWorkItem { [weak self] in
+                self?.showMenuIfPossible()
+            }
+            self.pendingShowWorkItem = showTask
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: showTask)
+            return
+        }
+
+        self.pendingShowWorkItem?.cancel()
+        self.pendingShowWorkItem = nil
+
+        self.pendingHideWorkItem?.cancel()
+        let hideTask = DispatchWorkItem { [weak self] in
+            self?.hideIfNotHovered()
+        }
+        self.pendingHideWorkItem = hideTask
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: hideTask)
+    }
+
+    private func hideIfNotHovered() {
+        guard !self.isHoveringSelector, !self.isHoveringMenu else { return }
+        self.pendingPositionWorkItem?.cancel()
+        self.pendingPositionWorkItem = nil
+        if let menuWindow = self.menuWindow, let parent = menuWindow.parent {
+            parent.removeChildWindow(menuWindow)
+        }
+        self.menuWindow?.orderOut(nil)
+    }
+
+    private func scheduleMenuPositionUpdate() {
+        guard self.pendingPositionWorkItem == nil else { return }
+
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingPositionWorkItem = nil
+            self.updateMenuSizeAndPosition()
+        }
+
+        self.pendingPositionWorkItem = task
+        DispatchQueue.main.async(execute: task)
+    }
+
+    private func showMenuIfPossible() {
+        guard self.selectorFrameInScreen.width > 0, self.selectorFrameInScreen.height > 0 else { return }
+
+        self.createWindowIfNeeded()
+        self.updateMenuContent()
+        self.attachToParentWindowIfNeeded()
+        self.updateMenuSizeAndPosition()
+        self.menuWindow?.orderFrontRegardless()
+    }
+
+    private func createWindowIfNeeded() {
+        guard self.menuWindow == nil else { return }
+
+        let panel = NSPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.isMovableByWindowBackground = false
+        panel.hidesOnDeactivate = false
+        panel.animationBehavior = .none
+
+        let contentView = BottomOverlayModeMenuView(
+            maxWidth: self.menuMaxWidth,
+            onHoverChanged: { [weak self] hovering in
+                self?.menuHoverChanged(hovering)
+            },
+            onDismissRequested: { [weak self] in
+                self?.hide()
+            }
+        )
+
+        let hostingView = NSHostingView(rootView: contentView)
+        let fittingSize = hostingView.fittingSize
+        hostingView.frame = NSRect(origin: .zero, size: fittingSize)
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = .clear
+
+        panel.setContentSize(fittingSize)
+        panel.contentView = hostingView
+
+        self.hostingView = hostingView
+        self.menuWindow = panel
+    }
+
+    private func updateMenuContent() {
+        let rootView = BottomOverlayModeMenuView(
+            maxWidth: self.menuMaxWidth,
+            onHoverChanged: { [weak self] hovering in
+                self?.menuHoverChanged(hovering)
+            },
+            onDismissRequested: { [weak self] in
+                self?.hide()
+            }
+        )
+        self.hostingView?.rootView = rootView
+    }
+
+    private func attachToParentWindowIfNeeded() {
+        guard let menuWindow = self.menuWindow else { return }
+
+        if let currentParent = menuWindow.parent, currentParent !== self.parentWindow {
+            currentParent.removeChildWindow(menuWindow)
+        }
+
+        if let parentWindow = self.parentWindow, menuWindow.parent !== parentWindow {
+            parentWindow.addChildWindow(menuWindow, ordered: .above)
+        }
+    }
+
+    private func updateMenuSizeAndPosition() {
+        guard let menuWindow = self.menuWindow, let hostingView = self.hostingView else { return }
+        guard self.selectorFrameInScreen.width > 0, self.selectorFrameInScreen.height > 0 else { return }
+
+        let fittingSize = hostingView.fittingSize
+        guard fittingSize.width > 0, fittingSize.height > 0 else { return }
+
+        let preferredX = self.selectorFrameInScreen.midX - (fittingSize.width / 2)
+        let preferredY = self.selectorFrameInScreen.maxY + self.menuGap
+
+        let screen = self.parentWindow?.screen
+            ?? NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: self.selectorFrameInScreen.midX, y: self.selectorFrameInScreen.midY)) })
+            ?? NSScreen.main
+
+        var targetX = preferredX
+        var targetY = preferredY
+
+        if let screen {
+            let visible = screen.visibleFrame
+            let horizontalInset: CGFloat = 8
+            let verticalInset: CGFloat = 8
+
+            if fittingSize.width < visible.width - (horizontalInset * 2) {
+                targetX = max(visible.minX + horizontalInset, min(preferredX, visible.maxX - fittingSize.width - horizontalInset))
+            } else {
+                targetX = visible.minX + horizontalInset
+            }
+
+            if fittingSize.height < visible.height - (verticalInset * 2) {
+                targetY = max(visible.minY + verticalInset, min(preferredY, visible.maxY - fittingSize.height - verticalInset))
+            } else {
+                targetY = visible.minY + verticalInset
+            }
+        }
+
+        let targetFrame = NSRect(x: targetX, y: targetY, width: fittingSize.width, height: fittingSize.height)
+        let currentFrame = menuWindow.frame
+        let frameTolerance: CGFloat = 0.5
+        let isSameFrame =
+            abs(currentFrame.origin.x - targetFrame.origin.x) <= frameTolerance &&
+            abs(currentFrame.origin.y - targetFrame.origin.y) <= frameTolerance &&
+            abs(currentFrame.size.width - targetFrame.size.width) <= frameTolerance &&
+            abs(currentFrame.size.height - targetFrame.size.height) <= frameTolerance
+
+        if !isSameFrame {
+            menuWindow.setFrame(targetFrame, display: false)
+        }
+    }
+}
+
+@MainActor
+final class BottomOverlayActionsMenuController {
+    static let shared = BottomOverlayActionsMenuController()
+
+    private var menuWindow: NSPanel?
+    private var hostingView: NSHostingView<BottomOverlayActionsMenuView>?
+    private var selectorFrameInScreen: CGRect = .zero
+    private weak var parentWindow: NSWindow?
+    private var menuMaxWidth: CGFloat = 220
+    private var menuGap: CGFloat = 6
+
+    private var isHoveringSelector = false
+    private var isHoveringMenu = false
+    private var pendingShowWorkItem: DispatchWorkItem?
+    private var pendingHideWorkItem: DispatchWorkItem?
+    private var pendingPositionWorkItem: DispatchWorkItem?
+
+    private init() {}
+
+    func updateAnchor(selectorFrameInScreen: CGRect, parentWindow: NSWindow?, maxWidth: CGFloat, menuGap: CGFloat) {
+        guard selectorFrameInScreen.width > 0, selectorFrameInScreen.height > 0 else { return }
+
+        let resolvedMaxWidth = max(maxWidth, 120)
+        let widthChanged = abs(self.menuMaxWidth - resolvedMaxWidth) > 0.5
+
+        self.selectorFrameInScreen = selectorFrameInScreen
+        self.parentWindow = parentWindow
+        self.menuMaxWidth = resolvedMaxWidth
+        self.menuGap = max(menuGap, 0)
+
+        if self.menuWindow?.isVisible == true {
+            if widthChanged {
+                self.updateMenuContent()
+            }
+            self.attachToParentWindowIfNeeded()
+            self.scheduleMenuPositionUpdate()
+        }
+    }
+
+    func selectorHoverChanged(_ hovering: Bool) {
+        // Hover-open disabled: menu is click/tap driven.
+    }
+
+    func menuHoverChanged(_ hovering: Bool) {
+        // Hover-open disabled: menu is click/tap driven.
+    }
+
+    func toggleFromTap() {
+        if self.menuWindow?.isVisible == true {
+            self.hide()
+            return
+        }
+        self.showMenuIfPossible()
+    }
+
+    func hide() {
+        self.pendingShowWorkItem?.cancel()
+        self.pendingShowWorkItem = nil
+        self.pendingHideWorkItem?.cancel()
+        self.pendingHideWorkItem = nil
+        self.pendingPositionWorkItem?.cancel()
+        self.pendingPositionWorkItem = nil
+
+        self.isHoveringSelector = false
+        self.isHoveringMenu = false
+
+        if let menuWindow = self.menuWindow, let parent = menuWindow.parent {
+            parent.removeChildWindow(menuWindow)
+        }
+        self.menuWindow?.orderOut(nil)
+    }
+
+    func dismissIfNeeded(for screenPoint: NSPoint) {
+        guard self.menuWindow?.isVisible == true else { return }
+        let insideMenu = self.menuWindow?.frame.contains(screenPoint) ?? false
+        let insideSelector = self.selectorFrameInScreen.contains(screenPoint)
+        if !insideMenu, !insideSelector {
+            self.hide()
+        }
+    }
+
+    private func updateVisibility() {
+        let shouldShow = self.isHoveringSelector || self.isHoveringMenu
+
+        if shouldShow {
+            self.pendingHideWorkItem?.cancel()
+            self.pendingHideWorkItem = nil
+
+            if self.menuWindow?.isVisible == true {
+                self.scheduleMenuPositionUpdate()
+                return
+            }
+
+            self.pendingShowWorkItem?.cancel()
+            let showTask = DispatchWorkItem { [weak self] in
+                self?.showMenuIfPossible()
+            }
+            self.pendingShowWorkItem = showTask
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: showTask)
+            return
+        }
+
+        self.pendingShowWorkItem?.cancel()
+        self.pendingShowWorkItem = nil
+
+        self.pendingHideWorkItem?.cancel()
+        let hideTask = DispatchWorkItem { [weak self] in
+            self?.hideIfNotHovered()
+        }
+        self.pendingHideWorkItem = hideTask
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: hideTask)
+    }
+
+    private func hideIfNotHovered() {
+        guard !self.isHoveringSelector, !self.isHoveringMenu else { return }
+        self.pendingPositionWorkItem?.cancel()
+        self.pendingPositionWorkItem = nil
+        if let menuWindow = self.menuWindow, let parent = menuWindow.parent {
+            parent.removeChildWindow(menuWindow)
+        }
+        self.menuWindow?.orderOut(nil)
+    }
+
+    private func scheduleMenuPositionUpdate() {
+        guard self.pendingPositionWorkItem == nil else { return }
+
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingPositionWorkItem = nil
+            self.updateMenuSizeAndPosition()
+        }
+
+        self.pendingPositionWorkItem = task
+        DispatchQueue.main.async(execute: task)
+    }
+
+    private func showMenuIfPossible() {
+        guard self.selectorFrameInScreen.width > 0, self.selectorFrameInScreen.height > 0 else { return }
+
+        self.createWindowIfNeeded()
+        self.updateMenuContent()
+        self.attachToParentWindowIfNeeded()
+        self.updateMenuSizeAndPosition()
+        self.menuWindow?.orderFrontRegardless()
+    }
+
+    private func createWindowIfNeeded() {
+        guard self.menuWindow == nil else { return }
+
+        let panel = NSPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.isMovableByWindowBackground = false
+        panel.hidesOnDeactivate = false
+        panel.animationBehavior = .none
+
+        let contentView = BottomOverlayActionsMenuView(
+            maxWidth: self.menuMaxWidth,
+            onHoverChanged: { [weak self] hovering in
+                self?.menuHoverChanged(hovering)
+            },
+            onDismissRequested: { [weak self] in
+                self?.hide()
+            }
+        )
+
+        let hostingView = NSHostingView(rootView: contentView)
+        let fittingSize = hostingView.fittingSize
+        hostingView.frame = NSRect(origin: .zero, size: fittingSize)
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = .clear
+
+        panel.setContentSize(fittingSize)
+        panel.contentView = hostingView
+
+        self.hostingView = hostingView
+        self.menuWindow = panel
+    }
+
+    private func updateMenuContent() {
+        let rootView = BottomOverlayActionsMenuView(
+            maxWidth: self.menuMaxWidth,
+            onHoverChanged: { [weak self] hovering in
+                self?.menuHoverChanged(hovering)
+            },
+            onDismissRequested: { [weak self] in
+                self?.hide()
+            }
+        )
+        self.hostingView?.rootView = rootView
+    }
+
+    private func attachToParentWindowIfNeeded() {
+        guard let menuWindow = self.menuWindow else { return }
+
+        if let currentParent = menuWindow.parent, currentParent !== self.parentWindow {
+            currentParent.removeChildWindow(menuWindow)
+        }
+
+        if let parentWindow = self.parentWindow, menuWindow.parent !== parentWindow {
+            parentWindow.addChildWindow(menuWindow, ordered: .above)
+        }
+    }
+
+    private func updateMenuSizeAndPosition() {
+        guard let menuWindow = self.menuWindow, let hostingView = self.hostingView else { return }
+        guard self.selectorFrameInScreen.width > 0, self.selectorFrameInScreen.height > 0 else { return }
+
+        let fittingSize = hostingView.fittingSize
+        guard fittingSize.width > 0, fittingSize.height > 0 else { return }
+
+        let preferredX = self.selectorFrameInScreen.midX - (fittingSize.width / 2)
+        let preferredY = self.selectorFrameInScreen.maxY + self.menuGap
+
+        let screen = self.parentWindow?.screen
+            ?? NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: self.selectorFrameInScreen.midX, y: self.selectorFrameInScreen.midY)) })
+            ?? NSScreen.main
+
+        var targetX = preferredX
+        var targetY = preferredY
+
+        if let screen {
+            let visible = screen.visibleFrame
+            let horizontalInset: CGFloat = 8
+            let verticalInset: CGFloat = 8
+
+            if fittingSize.width < visible.width - (horizontalInset * 2) {
+                targetX = max(visible.minX + horizontalInset, min(preferredX, visible.maxX - fittingSize.width - horizontalInset))
+            } else {
+                targetX = visible.minX + horizontalInset
+            }
+
+            if fittingSize.height < visible.height - (verticalInset * 2) {
+                targetY = max(visible.minY + verticalInset, min(preferredY, visible.maxY - fittingSize.height - verticalInset))
+            } else {
+                targetY = visible.minY + verticalInset
+            }
+        }
+
+        let targetFrame = NSRect(x: targetX, y: targetY, width: fittingSize.width, height: fittingSize.height)
+        let currentFrame = menuWindow.frame
+        let frameTolerance: CGFloat = 0.5
+        let isSameFrame =
+            abs(currentFrame.origin.x - targetFrame.origin.x) <= frameTolerance &&
+            abs(currentFrame.origin.y - targetFrame.origin.y) <= frameTolerance &&
+            abs(currentFrame.size.width - targetFrame.size.width) <= frameTolerance &&
+            abs(currentFrame.size.height - targetFrame.size.height) <= frameTolerance
+
+        if !isSameFrame {
+            menuWindow.setFrame(targetFrame, display: false)
+        }
+    }
+}
+
+private struct BottomOverlayModeMenuView: View {
+    @ObservedObject private var contentState = NotchContentState.shared
     @ObservedObject private var settings = SettingsStore.shared
 
     let maxWidth: CGFloat
     let onHoverChanged: (Bool) -> Void
     let onDismissRequested: () -> Void
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button(action: {
-                self.settings.selectedDictationPromptID = nil
-                self.restoreTypingTargetApp()
-                self.onDismissRequested()
-            }) {
-                HStack {
-                    Text("Default")
-                    Spacer()
-                    if self.settings.selectedDictationPromptID == nil {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .semibold))
-                    }
+    @State private var hoveredRowID: String?
+
+    private var normalizedOverlayMode: OverlayMode {
+        switch self.contentState.mode {
+        case .dictation:
+            return .dictation
+        case .edit, .write, .rewrite:
+            return .edit
+        case .command:
+            return .command
+        }
+    }
+
+    private func rowBackground(isSelected: Bool, rowID: String) -> some View {
+        let isHovered = self.hoveredRowID == rowID
+        let fillColor: Color
+        if isSelected {
+            fillColor = Color.white.opacity(0.28)
+        } else if isHovered {
+            fillColor = Color.white.opacity(0.20)
+        } else {
+            fillColor = Color.clear
+        }
+
+        let strokeColor: Color
+        if isSelected {
+            strokeColor = Color.white.opacity(0.38)
+        } else if isHovered {
+            strokeColor = Color.white.opacity(0.24)
+        } else {
+            strokeColor = Color.clear
+        }
+
+        return RoundedRectangle(cornerRadius: 7)
+            .fill(fillColor)
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(strokeColor, lineWidth: 1)
+            )
+    }
+
+    @ViewBuilder
+    private func modeRow(_ title: String, mode: OverlayMode, rowID: String) -> some View {
+        let isSelected = self.normalizedOverlayMode == mode
+        let shortcut = OverlayShortcutResolver.shortcutDisplay(for: mode, settings: self.settings)
+
+        Button(action: {
+            guard !self.contentState.isProcessing else { return }
+            self.contentState.onOverlayModeSwitchRequested?(mode)
+            self.onDismissRequested()
+        }) {
+            HStack(alignment: .center, spacing: 8) {
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                Spacer()
+                if !shortcut.isEmpty {
+                    Text(shortcut)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(Capsule())
+                }
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
                 }
             }
-            .buttonStyle(.plain)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(self.rowBackground(isSelected: isSelected, rowID: rowID))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            self.hoveredRowID = hovering ? rowID : nil
+        }
+    }
 
-            if !self.settings.dictationPromptProfiles.isEmpty {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            self.modeRow("Dictate", mode: .dictation, rowID: "dictate")
+            self.modeRow("Edit", mode: .edit, rowID: "edit")
+
+            Divider()
+                .padding(.vertical, 4)
+
+            self.modeRow("Command", mode: .command, rowID: "command")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.black)
+        .cornerRadius(8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
+        .frame(maxWidth: self.maxWidth)
+        .onHover { hovering in
+            self.onHoverChanged(hovering)
+        }
+    }
+}
+
+private struct BottomOverlayPromptMenuView: View {
+    @ObservedObject private var settings = SettingsStore.shared
+
+    let promptMode: SettingsStore.PromptMode
+    let maxWidth: CGFloat
+    let onHoverChanged: (Bool) -> Void
+    let onDismissRequested: () -> Void
+    @State private var hoveredRowID: String?
+
+    private func rowBackground(isSelected: Bool, rowID: String) -> some View {
+        let isHovered = self.hoveredRowID == rowID
+        let fillColor: Color
+        if isSelected {
+            fillColor = Color.white.opacity(0.28)
+        } else if isHovered {
+            fillColor = Color.white.opacity(0.20)
+        } else {
+            fillColor = Color.clear
+        }
+
+        let strokeColor: Color
+        if isSelected {
+            strokeColor = Color.white.opacity(0.38)
+        } else if isHovered {
+            strokeColor = Color.white.opacity(0.24)
+        } else {
+            strokeColor = Color.clear
+        }
+
+        return RoundedRectangle(cornerRadius: 7)
+            .fill(fillColor)
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(strokeColor, lineWidth: 1)
+            )
+    }
+
+    @ViewBuilder
+    private func defaultRow(selectedID: String?) -> some View {
+        let isSelected = selectedID == nil
+        Button(action: {
+            self.settings.setSelectedPromptID(nil, for: self.promptMode)
+            self.restoreTypingTargetApp()
+            self.onDismissRequested()
+        }) {
+            HStack {
+                Text("Default")
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(self.rowBackground(isSelected: isSelected, rowID: "default"))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            self.hoveredRowID = hovering ? "default" : nil
+        }
+    }
+
+    @ViewBuilder
+    private func profileRow(_ profile: SettingsStore.DictationPromptProfile, selectedID: String?) -> some View {
+        let isSelected = selectedID == profile.id
+        Button(action: {
+            self.settings.setSelectedPromptID(profile.id, for: self.promptMode)
+            self.restoreTypingTargetApp()
+            self.onDismissRequested()
+        }) {
+            HStack {
+                Text(profile.name.isEmpty ? "Untitled" : profile.name)
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(self.rowBackground(isSelected: isSelected, rowID: profile.id))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            self.hoveredRowID = hovering ? profile.id : nil
+        }
+    }
+
+    var body: some View {
+        let selectedID = self.settings.selectedPromptID(for: self.promptMode)
+        let profiles = self.settings.promptProfiles(for: self.promptMode)
+
+        VStack(alignment: .leading, spacing: 0) {
+            self.defaultRow(selectedID: selectedID)
+
+            if !profiles.isEmpty {
                 Divider()
                     .padding(.vertical, 4)
 
-                ForEach(self.settings.dictationPromptProfiles) { profile in
-                    Button(action: {
-                        self.settings.selectedDictationPromptID = profile.id
-                        self.restoreTypingTargetApp()
-                        self.onDismissRequested()
-                    }) {
-                        HStack {
-                            Text(profile.name.isEmpty ? "Untitled" : profile.name)
-                            Spacer()
-                            if self.settings.selectedDictationPromptID == profile.id {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 10, weight: .semibold))
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.vertical, 4)
+                ForEach(profiles) { profile in
+                    self.profileRow(profile, selectedID: selectedID)
                 }
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
         .background(Color.black)
         .cornerRadius(8)
         .overlay(
@@ -522,6 +1321,150 @@ private struct BottomOverlayPromptMenuView: View {
     }
 }
 
+private struct BottomOverlayActionsMenuView: View {
+    @ObservedObject private var contentState = NotchContentState.shared
+    @ObservedObject private var historyStore = TranscriptionHistoryStore.shared
+
+    let maxWidth: CGFloat
+    let onHoverChanged: (Bool) -> Void
+    let onDismissRequested: () -> Void
+
+    @State private var hoveredRowID: String?
+
+    private var canReprocessLast: Bool {
+        !self.historyStore.entries.isEmpty && !self.contentState.isProcessing
+    }
+
+    private var latestEntry: TranscriptionHistoryEntry? {
+        self.historyStore.entries.first
+    }
+
+    private var canCopyLast: Bool {
+        guard !self.contentState.isProcessing else { return false }
+        guard let latest = self.latestEntry else { return false }
+        let processed = latest.processedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = latest.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(processed.isEmpty && raw.isEmpty)
+    }
+
+    private var canUndoLastAI: Bool {
+        guard !self.contentState.isProcessing else { return false }
+        guard let latest = self.latestEntry else { return false }
+        let raw = latest.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return latest.wasAIProcessed && !raw.isEmpty
+    }
+
+    private func rowBackground(isSelected: Bool, rowID: String) -> some View {
+        let isHovered = self.hoveredRowID == rowID
+        let fillColor: Color
+        if isSelected {
+            fillColor = Color.white.opacity(0.28)
+        } else if isHovered {
+            fillColor = Color.white.opacity(0.20)
+        } else {
+            fillColor = Color.clear
+        }
+
+        let strokeColor: Color
+        if isSelected {
+            strokeColor = Color.white.opacity(0.38)
+        } else if isHovered {
+            strokeColor = Color.white.opacity(0.24)
+        } else {
+            strokeColor = Color.clear
+        }
+
+        return RoundedRectangle(cornerRadius: 7)
+            .fill(fillColor)
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(strokeColor, lineWidth: 1)
+            )
+    }
+
+    @ViewBuilder
+    private func actionRow(
+        title: String,
+        icon: String,
+        rowID: String,
+        enabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: {
+            guard enabled else { return }
+            action()
+            self.onDismissRequested()
+        }) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(self.rowBackground(isSelected: false, rowID: rowID))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.45)
+        .onHover { hovering in
+            guard enabled else {
+                self.hoveredRowID = nil
+                return
+            }
+            self.hoveredRowID = hovering ? rowID : nil
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            self.actionRow(
+                title: "Reprocess Last Dictation",
+                icon: "arrow.clockwise",
+                rowID: "reprocess_last",
+                enabled: self.canReprocessLast
+            ) {
+                self.contentState.onReprocessLastRequested?()
+            }
+
+            self.actionRow(
+                title: "Copy Last Transcription",
+                icon: "doc.on.doc",
+                rowID: "copy_last",
+                enabled: self.canCopyLast
+            ) {
+                self.contentState.onCopyLastRequested?()
+            }
+
+            Divider()
+                .padding(.vertical, 4)
+
+            self.actionRow(
+                title: "Undo AI on Last",
+                icon: "arrow.uturn.backward",
+                rowID: "undo_ai_last",
+                enabled: self.canUndoLastAI
+            ) {
+                self.contentState.onUndoLastAIRequested?()
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.black)
+        .cornerRadius(8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
+        .frame(maxWidth: self.maxWidth)
+        .onHover { hovering in
+            self.onHoverChanged(hovering)
+        }
+    }
+}
+
 private struct PromptSelectorAnchorReader: NSViewRepresentable {
     let onFrameChange: (CGRect, NSWindow?) -> Void
 
@@ -533,6 +1476,7 @@ private struct PromptSelectorAnchorReader: NSViewRepresentable {
 
     func updateNSView(_ nsView: AnchorReportingView, context: Context) {
         nsView.onFrameChange = self.onFrameChange
+        nsView.reportFrame(force: true)
     }
 
     final class AnchorReportingView: NSView {
@@ -620,8 +1564,21 @@ private struct PromptSelectorAnchorReader: NSViewRepresentable {
 struct BottomOverlayView: View {
     @ObservedObject private var contentState = NotchContentState.shared
     @ObservedObject private var appServices = AppServices.shared
+    @ObservedObject private var activeAppMonitor = ActiveAppMonitor.shared
+    @ObservedObject private var historyStore = TranscriptionHistoryStore.shared
     @ObservedObject private var settings = SettingsStore.shared
     @Environment(\.theme) private var theme
+    @State private var isHoveringModeChip = false
+    @State private var isHoveringPromptChip = false
+    @State private var isHoveringAIToggleChip = false
+    @State private var isHoveringActionsChip = false
+    @State private var isHoveringSettingsChip = false
+    @State private var modeSelectorFrameInScreen: CGRect = .zero
+    @State private var modeSelectorWindow: NSWindow?
+    @State private var promptSelectorFrameInScreen: CGRect = .zero
+    @State private var promptSelectorWindow: NSWindow?
+    @State private var actionsSelectorFrameInScreen: CGRect = .zero
+    @State private var actionsSelectorWindow: NSWindow?
 
     struct LayoutConstants {
         let hPadding: CGFloat
@@ -637,13 +1594,20 @@ struct BottomOverlayView: View {
         let barSpacing: CGFloat
         let minBarHeight: CGFloat
         let maxBarHeight: CGFloat
+        let containerWidth: CGFloat
+        let overlayWidth: CGFloat
+        let overlayHeight: CGFloat
+        let previewBoxHeight: CGFloat
+        let usesFixedCanvas: Bool
+        let showsTopControls: Bool
+        let showsPreview: Bool
 
         static func get(for size: SettingsStore.OverlaySize) -> LayoutConstants {
             switch size {
             case .small:
                 return LayoutConstants(
-                    hPadding: 14,
-                    vPadding: 8,
+                    hPadding: 10,
+                    vPadding: 6,
                     waveformWidth: 90,
                     waveformHeight: 20,
                     iconSize: 16,
@@ -654,7 +1618,14 @@ struct BottomOverlayView: View {
                     barWidth: 3.0,
                     barSpacing: 3.5,
                     minBarHeight: 5,
-                    maxBarHeight: 16
+                    maxBarHeight: 16,
+                    containerWidth: 200,
+                    overlayWidth: 300,
+                    overlayHeight: 124,
+                    previewBoxHeight: 0,
+                    usesFixedCanvas: false,
+                    showsTopControls: false,
+                    showsPreview: true
                 )
             case .medium:
                 return LayoutConstants(
@@ -670,12 +1641,19 @@ struct BottomOverlayView: View {
                     barWidth: 3.5,
                     barSpacing: 4.5,
                     minBarHeight: 6,
-                    maxBarHeight: 28
+                    maxBarHeight: 28,
+                    containerWidth: 340,
+                    overlayWidth: 380,
+                    overlayHeight: 156,
+                    previewBoxHeight: 0,
+                    usesFixedCanvas: false,
+                    showsTopControls: true,
+                    showsPreview: true
                 )
             case .large:
                 return LayoutConstants(
-                    hPadding: 24,
-                    vPadding: 18,
+                    hPadding: 18,
+                    vPadding: 12,
                     waveformWidth: 180,
                     waveformHeight: 48,
                     iconSize: 26,
@@ -686,7 +1664,14 @@ struct BottomOverlayView: View {
                     barWidth: 5.0,
                     barSpacing: 6.0,
                     minBarHeight: 8,
-                    maxBarHeight: 44
+                    maxBarHeight: 44,
+                    containerWidth: 600,
+                    overlayWidth: 600,
+                    overlayHeight: 288,
+                    previewBoxHeight: 92,
+                    usesFixedCanvas: true,
+                    showsTopControls: true,
+                    showsPreview: true
                 )
             }
         }
@@ -696,6 +1681,10 @@ struct BottomOverlayView: View {
         LayoutConstants.get(for: self.settings.overlaySize)
     }
 
+    private var isCompactControls: Bool {
+        self.settings.overlaySize == .medium
+    }
+
     private var modeColor: Color {
         self.contentState.mode.notchColor
     }
@@ -703,8 +1692,7 @@ struct BottomOverlayView: View {
     private var modeLabel: String {
         switch self.contentState.mode {
         case .dictation: return "Dictate"
-        case .rewrite: return "Rewrite"
-        case .write: return "Write"
+        case .edit, .rewrite, .write: return "Edit"
         case .command: return "Command"
         }
     }
@@ -712,11 +1700,17 @@ struct BottomOverlayView: View {
     private var processingLabel: String {
         switch self.contentState.mode {
         case .dictation: return "Refining..."
-        case .rewrite: return "Thinking..."
-        case .write: return "Thinking..."
+        case .edit, .rewrite, .write: return "Thinking..."
         case .command: return "Working..."
         }
     }
+
+    private static let transientOverlayStatusTexts: Set<String> = [
+        "Transcribing...",
+        "Refining...",
+        "Thinking...",
+        "Working...",
+    ]
 
     // ContentView writes transient status strings into transcriptionText while processing
     // (e.g. "Transcribing...", "Refining..."). Prefer that when present.
@@ -726,15 +1720,38 @@ struct BottomOverlayView: View {
     }
 
     private var hasTranscription: Bool {
-        !self.contentState.transcriptionText.isEmpty
+        !self.transcriptionPreviewText.isEmpty
     }
 
-    private var isDictationMode: Bool {
-        self.contentState.mode == .dictation
+    private var normalizedOverlayMode: OverlayMode {
+        switch self.contentState.mode {
+        case .dictation:
+            return .dictation
+        case .edit, .write, .rewrite:
+            return .edit
+        case .command:
+            return .command
+        }
+    }
+
+    private var activePromptMode: SettingsStore.PromptMode? {
+        switch self.normalizedOverlayMode {
+        case .dictation:
+            return .dictate
+        case .edit:
+            return .edit
+        case .command, .write, .rewrite:
+            return nil
+        }
+    }
+
+    private var isPromptSelectableMode: Bool {
+        self.activePromptMode != nil
     }
 
     private var selectedPromptLabel: String {
-        if let profile = self.settings.selectedDictationPromptProfile {
+        guard let activePromptMode else { return "N/A" }
+        if let profile = self.settings.selectedPromptProfile(for: activePromptMode) {
             let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
             return name.isEmpty ? "Untitled" : name
         }
@@ -750,7 +1767,7 @@ struct BottomOverlayView: View {
     }
 
     private var promptMenuGap: CGFloat {
-        max(4, self.layout.vPadding * 0.35)
+        max(0, self.layout.vPadding * 0.05)
     }
 
     private var promptSelectorCornerRadius: CGFloat {
@@ -762,7 +1779,7 @@ struct BottomOverlayView: View {
     }
 
     private var previewMaxHeight: CGFloat {
-        self.layout.transFontSize * 4.2
+        self.layout.usesFixedCanvas ? self.layout.previewBoxHeight : self.layout.transFontSize * 4.2
     }
 
     private var previewMaxWidth: CGFloat {
@@ -774,7 +1791,55 @@ struct BottomOverlayView: View {
     }
 
     private var transcriptionPreviewText: String {
-        self.contentState.cachedPreviewText
+        let preview = self.contentState.cachedPreviewText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !self.contentState.isProcessing else { return self.contentState.cachedPreviewText }
+        guard Self.transientOverlayStatusTexts.contains(preview) else { return self.contentState.cachedPreviewText }
+        return ""
+    }
+
+    private var overlayBorderLineWidth: CGFloat {
+        self.settings.overlaySize == .large ? 0.8 : 1
+    }
+
+    private var overlayBorderTopOpacity: Double {
+        self.settings.overlaySize == .large ? 0.10 : 0.15
+    }
+
+    private var overlayBorderBottomOpacity: Double {
+        self.settings.overlaySize == .large ? 0.05 : 0.08
+    }
+
+    private func chipBackground(isHovered: Bool, disabled: Bool) -> some View {
+        let fillColor: Color
+        if disabled {
+            fillColor = Color.black.opacity(0.95)
+        } else if isHovered {
+            fillColor = Color(red: 0.13, green: 0.13, blue: 0.16)
+        } else {
+            fillColor = Color.black
+        }
+
+        let topStrokeOpacity: Double = disabled ? 0.10 : (isHovered ? 0.36 : 0.14)
+        let bottomStrokeOpacity: Double = disabled ? 0.06 : (isHovered ? 0.22 : 0.08)
+        let hoverShadowColor: Color = (isHovered && !disabled) ? Color.white.opacity(0.16) : .clear
+
+        return RoundedRectangle(cornerRadius: self.promptSelectorCornerRadius)
+            .fill(fillColor)
+            .overlay(
+                RoundedRectangle(cornerRadius: self.promptSelectorCornerRadius)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(topStrokeOpacity),
+                                Color.white.opacity(bottomStrokeOpacity),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(color: hoverShadowColor, radius: 6, x: 0, y: 1)
     }
 
     private func closePromptMenu() {
@@ -782,15 +1847,13 @@ struct BottomOverlayView: View {
     }
 
     private func handlePromptSelectorHover(_ hovering: Bool) {
-        guard self.isDictationMode, !self.contentState.isProcessing else {
-            BottomOverlayPromptMenuController.shared.hide()
-            return
-        }
-        BottomOverlayPromptMenuController.shared.selectorHoverChanged(hovering)
+        // Hover-open disabled by design.
     }
 
     private func handlePromptSelectorFrameChange(_ frameInScreen: CGRect, window: NSWindow?) {
-        guard self.isDictationMode, !self.contentState.isProcessing else {
+        self.promptSelectorFrameInScreen = frameInScreen
+        self.promptSelectorWindow = window
+        guard self.layout.showsTopControls, self.isPromptSelectableMode, !self.contentState.isProcessing else {
             BottomOverlayPromptMenuController.shared.hide()
             return
         }
@@ -803,11 +1866,130 @@ struct BottomOverlayView: View {
         )
     }
 
+    private func requestModeSwitch(_ mode: OverlayMode) {
+        guard !self.contentState.isProcessing else { return }
+        self.contentState.onOverlayModeSwitchRequested?(mode)
+        BottomOverlayModeMenuController.shared.hide()
+    }
+
+    private func closeModeMenu() {
+        BottomOverlayModeMenuController.shared.hide()
+    }
+
+    private func closeActionsMenu() {
+        BottomOverlayActionsMenuController.shared.hide()
+    }
+
+    private func handleModeSelectorHover(_ hovering: Bool) {
+        guard !self.contentState.isProcessing else {
+            self.closeModeMenu()
+            return
+        }
+        BottomOverlayModeMenuController.shared.selectorHoverChanged(hovering)
+    }
+
+    private func handleModeSelectorFrameChange(_ frameInScreen: CGRect, window: NSWindow?) {
+        self.modeSelectorFrameInScreen = frameInScreen
+        self.modeSelectorWindow = window
+        guard self.layout.showsTopControls, !self.contentState.isProcessing else {
+            BottomOverlayModeMenuController.shared.hide()
+            return
+        }
+
+        BottomOverlayModeMenuController.shared.updateAnchor(
+            selectorFrameInScreen: frameInScreen,
+            parentWindow: window,
+            maxWidth: self.promptSelectorMaxWidth,
+            menuGap: self.promptMenuGap
+        )
+    }
+
+    private func handleActionsSelectorHover(_ hovering: Bool) {
+        let actionsDisabled = self.historyStore.entries.isEmpty || self.contentState.isProcessing
+        guard !actionsDisabled else {
+            self.closeActionsMenu()
+            return
+        }
+        BottomOverlayActionsMenuController.shared.selectorHoverChanged(hovering)
+    }
+
+    private func handleActionsSelectorFrameChange(_ frameInScreen: CGRect, window: NSWindow?) {
+        self.actionsSelectorFrameInScreen = frameInScreen
+        self.actionsSelectorWindow = window
+        let actionsDisabled = self.historyStore.entries.isEmpty || self.contentState.isProcessing
+        guard self.layout.showsTopControls, !actionsDisabled else {
+            BottomOverlayActionsMenuController.shared.hide()
+            return
+        }
+
+        BottomOverlayActionsMenuController.shared.updateAnchor(
+            selectorFrameInScreen: frameInScreen,
+            parentWindow: window,
+            maxWidth: self.promptSelectorMaxWidth,
+            menuGap: self.promptMenuGap
+        )
+    }
+
+    private var modeSelectorTrigger: some View {
+        HStack(spacing: 5) {
+            if !self.isCompactControls {
+                Text("Mode:")
+                    .font(.system(size: self.promptSelectorFontSize, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            Text(self.modeLabel)
+                .font(.system(size: self.promptSelectorFontSize, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.75))
+                .lineLimit(1)
+            Image(systemName: "chevron.up")
+                .font(.system(size: max(self.promptSelectorFontSize - 1, 8), weight: .semibold))
+                .foregroundStyle(.white.opacity(0.45))
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .padding(.horizontal, 8)
+        .padding(.vertical, self.promptSelectorVerticalPadding)
+        .background(
+            self.chipBackground(isHovered: self.isHoveringModeChip, disabled: self.contentState.isProcessing)
+        )
+    }
+
+    private var modeSelectorView: some View {
+        self.modeSelectorTrigger
+            .background(
+                PromptSelectorAnchorReader { frameInScreen, window in
+                    self.handleModeSelectorFrameChange(frameInScreen, window: window)
+                }
+                .allowsHitTesting(false)
+            )
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                self.isHoveringModeChip = hovering && !self.contentState.isProcessing
+            }
+            .onTapGesture {
+                guard self.layout.showsTopControls, !self.contentState.isProcessing else { return }
+                self.closePromptMenu()
+                self.closeActionsMenu()
+                BottomOverlayModeMenuController.shared.updateAnchor(
+                    selectorFrameInScreen: self.modeSelectorFrameInScreen,
+                    parentWindow: self.modeSelectorWindow,
+                    maxWidth: self.promptSelectorMaxWidth,
+                    menuGap: self.promptMenuGap
+                )
+                BottomOverlayModeMenuController.shared.toggleFromTap()
+            }
+    }
+
     private var promptSelectorTrigger: some View {
         HStack(spacing: 5) {
-            Text("Prompt:")
-                .font(.system(size: self.promptSelectorFontSize, weight: .medium))
-                .foregroundStyle(.white.opacity(0.5))
+            if !self.isCompactControls {
+                Text("Prompt:")
+                    .font(.system(size: self.promptSelectorFontSize, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
             Text(self.selectedPromptLabel)
                 .font(.system(size: self.promptSelectorFontSize, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.75))
@@ -816,99 +1998,317 @@ struct BottomOverlayView: View {
                 .font(.system(size: max(self.promptSelectorFontSize - 1, 8), weight: .semibold))
                 .foregroundStyle(.white.opacity(0.45))
         }
+        .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 8)
         .padding(.vertical, self.promptSelectorVerticalPadding)
         .background(
-            RoundedRectangle(cornerRadius: self.promptSelectorCornerRadius)
-                .fill(Color.black)
-                .overlay(
-                    RoundedRectangle(cornerRadius: self.promptSelectorCornerRadius)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.14),
-                                    Color.white.opacity(0.08),
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 1
-                        )
-                )
+            self.chipBackground(
+                isHovered: self.isHoveringPromptChip,
+                disabled: !self.isPromptSelectableMode || self.contentState.isProcessing
+            )
         )
     }
 
     private var promptSelectorView: some View {
-        self.promptSelectorTrigger
+        Group {
+            if self.isPromptSelectableMode {
+                self.promptSelectorTrigger
+                    .background(
+                        PromptSelectorAnchorReader { frameInScreen, window in
+                            self.handlePromptSelectorFrameChange(frameInScreen, window: window)
+                        }
+                        .allowsHitTesting(false)
+                    )
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        self.isHoveringPromptChip = hovering && !self.contentState.isProcessing
+                    }
+                    .onTapGesture {
+                        guard self.layout.showsTopControls, self.isPromptSelectableMode, !self.contentState.isProcessing else { return }
+                        self.closeModeMenu()
+                        self.closeActionsMenu()
+                        BottomOverlayPromptMenuController.shared.updateAnchor(
+                            selectorFrameInScreen: self.promptSelectorFrameInScreen,
+                            parentWindow: self.promptSelectorWindow,
+                            maxWidth: self.promptSelectorMaxWidth,
+                            menuGap: self.promptMenuGap
+                        )
+                        BottomOverlayPromptMenuController.shared.toggleFromTap()
+                    }
+            } else {
+                self.promptSelectorTrigger
+                    .opacity(0.6)
+                    .onHover { _ in
+                        self.isHoveringPromptChip = false
+                    }
+            }
+        }
+    }
+
+    private var actionsSelectorTrigger: some View {
+        let actionsDisabled = self.historyStore.entries.isEmpty || self.contentState.isProcessing
+        return HStack(spacing: 5) {
+            Text("Actions")
+                .font(.system(size: self.promptSelectorFontSize, weight: .medium))
+                .foregroundStyle(.white.opacity(0.75))
+                .lineLimit(1)
+            Image(systemName: "chevron.up")
+                .font(.system(size: max(self.promptSelectorFontSize - 1, 8), weight: .semibold))
+                .foregroundStyle(.white.opacity(0.45))
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .padding(.horizontal, 8)
+        .padding(.vertical, self.promptSelectorVerticalPadding)
+        .background(
+            self.chipBackground(
+                isHovered: self.isHoveringActionsChip,
+                disabled: actionsDisabled
+            )
+        )
+    }
+
+    private var aiToggleChip: some View {
+        let disabled = self.contentState.isProcessing
+        let isEnabled = self.settings.enableAIProcessing
+        return HStack(spacing: self.isCompactControls ? 0 : 5) {
+            if self.isCompactControls {
+                Text(isEnabled ? "AI On" : "AI Off")
+                    .font(.system(size: self.promptSelectorFontSize, weight: .semibold))
+                    .foregroundStyle(isEnabled ? .white.opacity(0.82) : .white.opacity(0.7))
+                    .lineLimit(1)
+            } else {
+                Text("AI:")
+                    .font(.system(size: self.promptSelectorFontSize, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+                Text(isEnabled ? "On" : "Off")
+                    .font(.system(size: self.promptSelectorFontSize, weight: .semibold))
+                    .foregroundStyle(isEnabled ? .white.opacity(0.82) : .white.opacity(0.7))
+                    .lineLimit(1)
+                Image(systemName: isEnabled ? "brain.fill" : "brain")
+                    .font(.system(size: max(self.promptSelectorFontSize - 1, 8), weight: .semibold))
+                    .foregroundStyle(isEnabled ? .white.opacity(0.65) : .white.opacity(0.45))
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .padding(.horizontal, 8)
+        .padding(.vertical, self.promptSelectorVerticalPadding)
+        .background(
+            self.chipBackground(
+                isHovered: self.isHoveringAIToggleChip,
+                disabled: disabled
+            )
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            self.isHoveringAIToggleChip = hovering && !disabled
+        }
+        .onTapGesture {
+            guard !disabled else { return }
+            self.closePromptMenu()
+            self.closeModeMenu()
+            self.closeActionsMenu()
+            self.contentState.onToggleAIProcessingRequested?()
+        }
+        .help("Toggle AI enhancement for dictation")
+        .opacity(disabled ? 0.65 : 1)
+    }
+
+    private var actionsSelectorView: some View {
+        let actionsDisabled = self.historyStore.entries.isEmpty || self.contentState.isProcessing
+        return self.actionsSelectorTrigger
             .background(
                 PromptSelectorAnchorReader { frameInScreen, window in
-                    self.handlePromptSelectorFrameChange(frameInScreen, window: window)
+                    self.handleActionsSelectorFrameChange(frameInScreen, window: window)
                 }
                 .allowsHitTesting(false)
             )
-            .frame(maxWidth: self.promptSelectorMaxWidth, alignment: .center)
             .contentShape(Rectangle())
             .onHover { hovering in
-                self.handlePromptSelectorHover(hovering)
+                self.isHoveringActionsChip = hovering && !actionsDisabled
+                self.handleActionsSelectorHover(hovering)
             }
+            .onTapGesture {
+                guard self.layout.showsTopControls, !actionsDisabled else { return }
+                self.closePromptMenu()
+                self.closeModeMenu()
+                BottomOverlayActionsMenuController.shared.updateAnchor(
+                    selectorFrameInScreen: self.actionsSelectorFrameInScreen,
+                    parentWindow: self.actionsSelectorWindow,
+                    maxWidth: self.promptSelectorMaxWidth,
+                    menuGap: self.promptMenuGap
+                )
+                BottomOverlayActionsMenuController.shared.toggleFromTap()
+            }
+            .help(
+                self.historyStore.entries.isEmpty
+                    ? "No saved dictation history available"
+                    : "Reprocess the latest dictation using current AI settings"
+            )
+    }
+
+    private var settingsChip: some View {
+        let disabled = false
+        return HStack(spacing: 0) {
+            Image(systemName: "gearshape")
+                .font(.system(size: max(self.promptSelectorFontSize + 1, 10), weight: .semibold))
+                .foregroundStyle(.white.opacity(0.72))
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, self.promptSelectorVerticalPadding)
+        .background(
+            self.chipBackground(
+                isHovered: self.isHoveringSettingsChip,
+                disabled: disabled
+            )
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            self.isHoveringSettingsChip = hovering
+        }
+        .onTapGesture {
+            self.closePromptMenu()
+            self.closeModeMenu()
+            self.closeActionsMenu()
+            self.contentState.onOpenPreferencesRequested?()
+        }
+        .help("Open Preferences")
     }
 
     var body: some View {
         VStack(spacing: max(4, self.layout.vPadding / 2)) {
-            if self.isDictationMode && !self.contentState.isProcessing {
-                self.promptSelectorView
+            if self.layout.showsTopControls {
+                HStack(spacing: self.isCompactControls ? 6 : 8) {
+                    self.modeSelectorView
+                    self.promptSelectorView
+                    Spacer(minLength: 4)
+                    self.aiToggleChip
+                    self.actionsSelectorView
+                    if !self.isCompactControls {
+                        self.settingsChip
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: self.isCompactControls ? .center : .leading)
+                .padding(.horizontal, self.layout.hPadding)
             }
 
             VStack(spacing: self.layout.vPadding / 2) {
-                // Transcription text area (wrapped)
-                Group {
-                    if self.hasTranscription && !self.contentState.isProcessing {
-                        let previewText = self.transcriptionPreviewText
-                        if !previewText.isEmpty {
-                            ScrollViewReader { proxy in
-                                ScrollView(.vertical, showsIndicators: false) {
-                                    Text(previewText)
-                                        .font(.system(size: self.layout.transFontSize, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.9))
-                                        .multilineTextAlignment(.leading)
-                                        .lineLimit(nil)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                    Color.clear.frame(height: 1).id("bottom")
-                                }
-                                .frame(width: self.previewMaxWidth)
-                                .frame(maxHeight: self.previewMaxHeight)
-                                .clipped()
-                                .onAppear {
-                                    DispatchQueue.main.async {
-                                        proxy.scrollTo("bottom", anchor: .bottom)
+                if self.layout.showsPreview {
+                    if self.layout.usesFixedCanvas {
+                        // Transcription text area (fixed-height in large mode)
+                        Group {
+                            if self.contentState.isProcessing {
+                                ShimmerText(
+                                    text: self.processingStatusText,
+                                    color: self.modeColor,
+                                    font: .system(size: self.layout.transFontSize, weight: .medium)
+                                )
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                            } else if self.hasTranscription {
+                                let previewText = self.transcriptionPreviewText
+                                if !previewText.isEmpty {
+                                    ScrollViewReader { proxy in
+                                        ScrollView(.vertical, showsIndicators: false) {
+                                            Text(previewText)
+                                                .font(.system(size: self.layout.transFontSize, weight: .medium))
+                                                .foregroundStyle(.white.opacity(0.9))
+                                                .multilineTextAlignment(.leading)
+                                                .lineLimit(nil)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                            Color.clear.frame(height: 1).id("bottom")
+                                        }
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                        .clipped()
+                                        .onAppear {
+                                            DispatchQueue.main.async {
+                                                proxy.scrollTo("bottom", anchor: .bottom)
+                                            }
+                                        }
+                                        .onChange(of: previewText) { _, _ in
+                                            DispatchQueue.main.async {
+                                                proxy.scrollTo("bottom", anchor: .bottom)
+                                            }
+                                        }
                                     }
                                 }
-                                .onChange(of: previewText) { _, _ in
-                                    DispatchQueue.main.async {
-                                        proxy.scrollTo("bottom", anchor: .bottom)
-                                    }
-                                }
+                            } else {
+                                Color.clear
                             }
-                            .padding(.vertical, self.transcriptionVerticalPadding)
                         }
-                    } else if self.contentState.isProcessing {
-                        ShimmerText(
-                            text: self.processingStatusText,
-                            color: self.modeColor,
-                            font: .system(size: self.layout.transFontSize, weight: .medium)
+                        .padding(.vertical, self.transcriptionVerticalPadding)
+                        .frame(
+                            maxWidth: .infinity,
+                            minHeight: self.previewMaxHeight,
+                            maxHeight: self.previewMaxHeight,
+                            alignment: .topLeading
+                        )
+                    } else {
+                        // Original dynamic preview behavior for small/medium
+                        Group {
+                            if self.hasTranscription && !self.contentState.isProcessing {
+                                let previewText = self.transcriptionPreviewText
+                                if !previewText.isEmpty {
+                                    if self.settings.overlaySize == .small {
+                                        Text(previewText)
+                                            .font(.system(size: self.layout.transFontSize, weight: .medium))
+                                            .foregroundStyle(.white.opacity(0.9))
+                                            .multilineTextAlignment(.leading)
+                                            .lineLimit(1)
+                                            .truncationMode(.head)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(.vertical, max(2, self.transcriptionVerticalPadding - 1))
+                                    } else {
+                                        ScrollViewReader { proxy in
+                                            ScrollView(.vertical, showsIndicators: false) {
+                                                Text(previewText)
+                                                    .font(.system(size: self.layout.transFontSize, weight: .medium))
+                                                    .foregroundStyle(.white.opacity(0.9))
+                                                    .multilineTextAlignment(.leading)
+                                                    .lineLimit(nil)
+                                                    .fixedSize(horizontal: false, vertical: true)
+                                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                                Color.clear.frame(height: 1).id("bottom")
+                                            }
+                                            .frame(width: self.previewMaxWidth)
+                                            .frame(maxHeight: self.previewMaxHeight)
+                                            .clipped()
+                                            .onAppear {
+                                                DispatchQueue.main.async {
+                                                    proxy.scrollTo("bottom", anchor: .bottom)
+                                                }
+                                            }
+                                            .onChange(of: previewText) { _, _ in
+                                                DispatchQueue.main.async {
+                                                    proxy.scrollTo("bottom", anchor: .bottom)
+                                                }
+                                            }
+                                        }
+                                        .padding(.vertical, self.transcriptionVerticalPadding)
+                                    }
+                                }
+                            } else if self.contentState.isProcessing {
+                                ShimmerText(
+                                    text: self.processingStatusText,
+                                    color: self.modeColor,
+                                    font: .system(size: self.layout.transFontSize, weight: .medium)
+                                )
+                            }
+                        }
+                        .frame(
+                            maxWidth: self.previewMaxWidth,
+                            minHeight: self.hasTranscription || self.contentState.isProcessing ? self.layout.transFontSize * 1.5 : 0
                         )
                     }
                 }
-                .frame(
-                    maxWidth: self.previewMaxWidth,
-                    minHeight: self.hasTranscription || self.contentState.isProcessing ? self.layout.transFontSize * 1.5 : 0
-                )
 
                 // Waveform + Mode label row
                 HStack(spacing: self.layout.hPadding / 1.5) {
                     // Target app icon (the app where text will be typed)
-                    if let appIcon = contentState.targetAppIcon {
+                    let appIcon = self.contentState.targetAppIcon ?? self.activeAppMonitor.activeAppIcon
+                    if appIcon != nil || !self.appServices.asr.isAsrReady &&
+                        (self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel)
+                    {
                         let showModelLoading = !self.appServices.asr.isAsrReady &&
                             (self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel)
                         VStack(spacing: 2) {
@@ -917,12 +2317,16 @@ struct BottomOverlayView: View {
                                     .controlSize(.mini)
                                     .fixedSize()
                             }
-                            Image(nsImage: appIcon)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: self.layout.iconSize, height: self.layout.iconSize)
-                                .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize / 4))
+                            if let appIcon = appIcon {
+                                Image(nsImage: appIcon)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+                                    .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize / 4))
+                            }
                         }
+                        .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+                        .opacity((appIcon != nil || self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel) ? 1 : 0)
                     }
 
                     // Waveform visualization
@@ -939,6 +2343,7 @@ struct BottomOverlayView: View {
 
                         if !self.appServices.asr.isAsrReady &&
                             (self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel)
+                            && self.settings.overlaySize != .small
                         {
                             Text("Loading model…")
                                 .font(.system(size: max(self.layout.modeFontSize - 2, 9), weight: .medium))
@@ -950,6 +2355,7 @@ struct BottomOverlayView: View {
             }
             .padding(.horizontal, self.layout.hPadding)
             .padding(.vertical, self.layout.vPadding)
+            .frame(maxWidth: .infinity, alignment: .center)
             .background(
                 ZStack {
                     // Solid pitch black background
@@ -961,34 +2367,75 @@ struct BottomOverlayView: View {
                         .strokeBorder(
                             LinearGradient(
                                 colors: [
-                                    Color.white.opacity(0.15),
-                                    Color.white.opacity(0.08),
+                                    Color.white.opacity(self.overlayBorderTopOpacity),
+                                    Color.white.opacity(self.overlayBorderBottomOpacity),
                                 ],
                                 startPoint: .top,
                                 endPoint: .bottom
                             ),
-                            lineWidth: 1
+                            lineWidth: self.overlayBorderLineWidth
                         )
                 }
             )
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .frame(
+            width: self.layout.usesFixedCanvas ? self.layout.overlayWidth : self.layout.containerWidth,
+            height: self.layout.usesFixedCanvas ? self.layout.overlayHeight : nil,
+            alignment: .top
+        )
+        .onChange(of: self.settings.overlaySize) { _, _ in
+            BottomOverlayWindowController.shared.refreshSizeForContent()
         }
         .onChange(of: self.contentState.cachedPreviewText) { _, _ in
-            BottomOverlayWindowController.shared.refreshSizeForContent()
+            if !self.layout.usesFixedCanvas {
+                BottomOverlayWindowController.shared.refreshSizeForContent()
+            }
         }
         .onChange(of: self.contentState.mode) { _, _ in
-            if !self.isDictationMode || self.contentState.isProcessing {
+            if !self.isPromptSelectableMode || self.contentState.isProcessing {
                 self.closePromptMenu()
             }
-            BottomOverlayWindowController.shared.refreshSizeForContent()
+            self.closeModeMenu()
+            self.closeActionsMenu()
+            self.isHoveringModeChip = false
+            self.isHoveringPromptChip = false
+            self.isHoveringAIToggleChip = false
+            self.isHoveringActionsChip = false
+            self.isHoveringSettingsChip = false
+            switch self.contentState.mode {
+            case .dictation: self.contentState.promptPickerMode = .dictate
+            case .edit, .write, .rewrite: self.contentState.promptPickerMode = .edit
+            case .command: break
+            }
+            if !self.layout.usesFixedCanvas {
+                BottomOverlayWindowController.shared.refreshSizeForContent()
+            }
         }
         .onChange(of: self.contentState.isProcessing) { _, processing in
             if processing {
                 self.closePromptMenu()
+                self.closeModeMenu()
+                self.closeActionsMenu()
             }
-            BottomOverlayWindowController.shared.refreshSizeForContent()
+            self.isHoveringModeChip = false
+            self.isHoveringPromptChip = false
+            self.isHoveringAIToggleChip = false
+            self.isHoveringActionsChip = false
+            self.isHoveringSettingsChip = false
+            if !self.layout.usesFixedCanvas {
+                BottomOverlayWindowController.shared.refreshSizeForContent()
+            }
         }
         .onDisappear {
             self.closePromptMenu()
+            self.closeModeMenu()
+            self.closeActionsMenu()
+            self.isHoveringModeChip = false
+            self.isHoveringPromptChip = false
+            self.isHoveringAIToggleChip = false
+            self.isHoveringActionsChip = false
+            self.isHoveringSettingsChip = false
         }
         // TODO: Add tap-to-expand for command mode history (future enhancement)
         // .contentShape(Rectangle())

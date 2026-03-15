@@ -101,6 +101,7 @@ final class ASRService: ObservableObject {
     @Published var isRunning: Bool = false
     @Published var finalText: String = ""
     @Published var partialTranscription: String = ""
+    @Published var wordBoostStatusText: String = "Word boost: off"
     @Published var micStatus: AVAuthorizationStatus = .notDetermined
     @Published var isAsrReady: Bool = false
     @Published var isDownloadingModel: Bool = false
@@ -112,7 +113,10 @@ final class ASRService: ObservableObject {
     private var isStarting: Bool = false // Guard against re-entrant start() calls
     private var downloadProgressTask: Task<Void, Never>?
     private var hasCompletedFirstTranscription: Bool = false // Track if model has warmed up with first transcription
+    private var lastBoostHitTerm: String?
+    private var hasPendingParakeetVocabularyReload: Bool = false
     private let downloadRegistry = ModelDownloadRegistry()
+    private var vocabularyChangeObserver: NSObjectProtocol?
 
     // MARK: - Error Handling
 
@@ -160,6 +164,12 @@ final class ASRService: ObservableObject {
             return self.getAppleSpeechProvider()
         case .parakeetTDT, .parakeetTDTv2:
             return self.getFluidAudioProvider()
+        case .qwen3Asr:
+            DebugLogger.shared.warning(
+                "ASRService: Qwen provider removed; falling back to FluidAudio Parakeet path",
+                source: "ASRService"
+            )
+            return self.getFluidAudioProvider()
         default:
             return self.getWhisperProvider()
         }
@@ -169,9 +179,14 @@ final class ASRService: ObservableObject {
         if let existing = fluidAudioProvider {
             return existing
         }
-        let provider = FluidAudioProvider()
+        let provider = FluidAudioProvider(
+            configureWordBoosting: SettingsStore.shared.vocabularyBoostingEnabled
+        )
         self.fluidAudioProvider = provider
-        DebugLogger.shared.info("ASRService: Created FluidAudio provider", source: "ASRService")
+        DebugLogger.shared.info(
+            "ASRService: Created FluidAudio provider [vocabBoosting=\(SettingsStore.shared.vocabularyBoostingEnabled)]",
+            source: "ASRService"
+        )
         return provider
     }
 
@@ -231,8 +246,11 @@ final class ASRService: ObservableObject {
             return AppleSpeechProvider()
         case .parakeetTDT, .parakeetTDTv2:
             // Create a new provider configured for the specific model
-            let provider = FluidAudioProvider(modelOverride: model)
+            let provider = FluidAudioProvider(modelOverride: model, configureWordBoosting: false)
             return provider
+        case .qwen3Asr:
+            // Qwen support removed; route legacy requests to Parakeet v3.
+            return FluidAudioProvider(modelOverride: .parakeetTDT, configureWordBoosting: false)
         default:
             // Whisper models - create provider with specific model override
             let provider = WhisperProvider(modelOverride: model)
@@ -300,6 +318,8 @@ final class ASRService: ObservableObject {
         self.ensureReadyTask?.cancel()
         self.ensureReadyTask = nil
         self.ensureReadyProviderKey = nil
+        self.lastBoostHitTerm = nil
+        self.wordBoostStatusText = "Word boost: off"
 
         // Reset cached providers to force re-initialization with new settings
         self.fluidAudioProvider = nil
@@ -313,6 +333,9 @@ final class ASRService: ObservableObject {
         Task { [weak self] in
             guard let self = self else { return }
             await self.checkIfModelsExistAsync()
+            await MainActor.run {
+                self.refreshWordBoostStatus()
+            }
             DebugLogger.shared.info("ASRService: Provider reset complete, will initialize '\(newModel.displayName)' on next use", source: "ASRService")
         }
     }
@@ -397,6 +420,90 @@ final class ASRService: ObservableObject {
         // - micStatus = .notDetermined
         // - micPermissionGranted = false
         // - modelsExistOnDisk = false
+        self.vocabularyChangeObserver = NotificationCenter.default.addObserver(
+            forName: .parakeetVocabularyDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleParakeetVocabularyDidChange()
+            }
+        }
+    }
+
+    deinit {
+        if let observer = self.vocabularyChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    @MainActor
+    private func handleParakeetVocabularyDidChange() {
+        let model = SettingsStore.shared.selectedSpeechModel
+        guard model == .parakeetTDT || model == .parakeetTDTv2 else { return }
+        guard self.isRunning == false else {
+            self.hasPendingParakeetVocabularyReload = true
+            DebugLogger.shared.info(
+                "ASRService: Vocabulary changed while recording; queued reload for when recording stops.",
+                source: "ASRService"
+            )
+            return
+        }
+        self.hasPendingParakeetVocabularyReload = false
+        self.resetTranscriptionProvider()
+    }
+
+    @MainActor
+    private func applyPendingParakeetVocabularyReloadIfNeeded() {
+        guard self.hasPendingParakeetVocabularyReload else { return }
+
+        self.hasPendingParakeetVocabularyReload = false
+        let model = SettingsStore.shared.selectedSpeechModel
+        guard model == .parakeetTDT || model == .parakeetTDTv2 else { return }
+
+        DebugLogger.shared.info(
+            "ASRService: Applying queued vocabulary reload after recording stopped.",
+            source: "ASRService"
+        )
+        self.resetTranscriptionProvider()
+    }
+
+    private func refreshWordBoostStatus() {
+        let model = SettingsStore.shared.selectedSpeechModel
+        guard model == .parakeetTDT || model == .parakeetTDTv2,
+              let provider = self.fluidAudioProvider,
+              provider.isReady
+        else {
+            self.wordBoostStatusText = "Word boost: off"
+            return
+        }
+
+        if provider.isWordBoostingActive {
+            let count = provider.boostedVocabularyTermsCount
+            if let lastHit = self.lastBoostHitTerm, !lastHit.isEmpty {
+                self.wordBoostStatusText = "Word boost: ON (\(count) terms) • last hit: \(lastHit)"
+            } else {
+                self.wordBoostStatusText = "Word boost: ON (\(count) terms) • no hit yet"
+            }
+        } else {
+            self.wordBoostStatusText = "Word boost: ON (0 terms loaded)"
+        }
+    }
+
+    private func recordWordBoostHitIfAny(transcribedText: String) {
+        let model = SettingsStore.shared.selectedSpeechModel
+        guard model == .parakeetTDT || model == .parakeetTDTv2,
+              let provider = self.fluidAudioProvider,
+              provider.isWordBoostingActive
+        else { return }
+
+        let hits = provider.detectBoostedTerms(in: transcribedText, limit: 1)
+        guard let hit = hits.first else { return }
+        if hit != self.lastBoostHitTerm {
+            self.lastBoostHitTerm = hit
+            DebugLogger.shared.info("BOOST_HIT: '\(hit)'", source: "ASRService")
+        }
+        self.refreshWordBoostStatus()
     }
 
     /// Call this AFTER the app has finished launching to complete ASR initialization.
@@ -521,10 +628,12 @@ final class ASRService: ObservableObject {
         self.audioBuffer.clear(keepingCapacity: true) // specific optimization for restart
         self.partialTranscription.removeAll()
         self.previousFullTranscription.removeAll()
+        self.lastBoostHitTerm = nil
         self.lastProcessedSampleCount = 0
         self.isProcessingChunk = false
         self.skipNextChunk = false
         self.audioCapturePipeline.setRecordingEnabled(true)
+        self.refreshWordBoostStatus()
         DebugLogger.shared.debug("✅ Buffers cleared", source: "ASRService")
 
         self.isStarting = true
@@ -643,6 +752,7 @@ final class ASRService: ObservableObject {
             DebugLogger.shared.warning("⚠️ STOP() - not running, returning empty string", source: "ASRService")
             return ""
         }
+        defer { self.applyPendingParakeetVocabularyReloadIfNeeded() }
 
         // Capture media pause state before we reset it, for resuming at the end
         let shouldResumeMedia = SettingsStore.shared.pauseMediaDuringTranscription && self.didPauseMediaForThisSession
@@ -728,7 +838,7 @@ final class ASRService: ObservableObject {
             DebugLogger.shared.debug("📝 Starting transcription executor...", source: "ASRService")
             let result = try await transcriptionExecutor.run { [provider = self.transcriptionProvider] in
                 DebugLogger.shared.debug("📝 Inside transcription executor closure", source: "ASRService")
-                let transcriptionResult = try await provider.transcribe(pcm)
+                let transcriptionResult = try await provider.transcribeFinal(pcm)
                 DebugLogger.shared.debug("📝 Transcription provider returned", source: "ASRService")
                 return transcriptionResult
             }
@@ -750,6 +860,7 @@ final class ASRService: ObservableObject {
 
             // Do not update self.finalText here to avoid instant binding insert in playground
             let cleanedText = ASRService.applyCustomDictionary(ASRService.removeFillerWords(result.text))
+            self.recordWordBoostHitIfAny(transcribedText: cleanedText)
             DebugLogger.shared.debug("After post-processing: '\(cleanedText)'", source: "ASRService")
 
             // Resume media playback if we paused it
@@ -793,6 +904,7 @@ final class ASRService: ObservableObject {
 
     func stopWithoutTranscription() async {
         guard self.isRunning else { return }
+        defer { self.applyPendingParakeetVocabularyReloadIfNeeded() }
 
         // Capture media pause state before we reset it, for resuming at the end
         let shouldResumeMedia = SettingsStore.shared.pauseMediaDuringTranscription && self.didPauseMediaForThisSession
@@ -813,10 +925,14 @@ final class ASRService: ObservableObject {
         self.engine.stop()
         DebugLogger.shared.debug("Engine stopped", source: "ASRService")
 
-        // Recreate engine instance to release resources (same as stop())
-        DebugLogger.shared.debug("🗑️ Deallocating old engine and creating fresh instance...", source: "ASRService")
+        // Release old engine on a background thread — if the underlying device just died,
+        // AVAudioEngine deallocation can block in CoreAudio's internal teardown.
+        // No new engine is created here (it's lazy on next start()), so no overlap risk.
+        let oldEngine = self.engineStorage
         self.engineStorage = nil
-        DebugLogger.shared.debug("✅ Engine instance recreated", source: "ASRService")
+        if let oldEngine {
+            DispatchQueue.global(qos: .utility).async { _ = oldEngine }
+        }
 
         // CRITICAL FIX: Await completion of streaming task AND any pending transcriptions
         // This prevents use-after-free crashes (EXC_BAD_ACCESS) when clearing buffer
@@ -826,9 +942,11 @@ final class ASRService: ObservableObject {
         self.audioBuffer.clear()
         self.partialTranscription.removeAll()
         self.previousFullTranscription.removeAll()
+        self.lastBoostHitTerm = nil
         self.lastProcessedSampleCount = 0
         self.isProcessingChunk = false
         self.skipNextChunk = false
+        self.refreshWordBoostStatus()
 
         // Resume media playback if we paused it
         if shouldResumeMedia {
@@ -1361,7 +1479,10 @@ final class ASRService: ObservableObject {
             mElement: kAudioObjectPropertyElementMain
         )
         let token: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.handleDefaultInputChanged()
+            // Defer to next runloop pass — CoreAudio may hold an internal lock during
+            // this callback, and our handler makes synchronous CoreAudio queries that
+            // would deadlock waiting for the same lock.
+            DispatchQueue.main.async { self?.handleDefaultInputChanged() }
         }
         let status = AudioObjectAddPropertyListenerBlock(
             AudioObjectID(kAudioObjectSystemObject),
@@ -1396,7 +1517,10 @@ final class ASRService: ObservableObject {
         )
 
         let token: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.handleDeviceListChanged()
+            // Defer to next runloop pass — CoreAudio may hold an internal lock during
+            // this callback, and our handler makes synchronous CoreAudio queries that
+            // would deadlock waiting for the same lock.
+            DispatchQueue.main.async { self?.handleDeviceListChanged() }
         }
         let status = AudioObjectAddPropertyListenerBlock(
             AudioObjectID(kAudioObjectSystemObject),
@@ -1428,7 +1552,7 @@ final class ASRService: ObservableObject {
         )
 
         let token: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.handleDeviceAvailabilityChanged(deviceID: deviceID)
+            DispatchQueue.main.async { self?.handleDeviceAvailabilityChanged(deviceID: deviceID) }
         }
         let status = AudioObjectAddPropertyListenerBlock(
             deviceID,
@@ -1470,71 +1594,73 @@ final class ASRService: ObservableObject {
     private func handleDeviceListChanged() {
         DebugLogger.shared.info("🔄 Device list changed - checking for new/removed devices", source: "ASRService")
 
-        // Get current device list
-        let currentDevices = AudioDevice.listInputDevices()
-        DebugLogger.shared.debug("Current input devices: \(currentDevices.map { $0.name }.joined(separator: ", "))", source: "ASRService")
-
-        // Check if preferred device is now available (for auto-switch)
-        if let preferredUID = SettingsStore.shared.preferredInputDeviceUID,
-           let preferredDevice = currentDevices.first(where: { $0.uid == preferredUID })
-        {
-            // If we're currently using a fallback (system default), switch to preferred device
+        // Perform CoreAudio queries off the main thread — during a device topology change
+        // the HAL may still be settling, and synchronous queries on main can deadlock.
+        let preferredUID = SettingsStore.shared.preferredInputDeviceUID
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let currentDevices = AudioDevice.listInputDevices()
             let systemDefault = AudioDevice.getDefaultInputDevice()
-            if let currentDevice = getCurrentlyBoundInputDevice(),
-               currentDevice.uid != preferredUID,
-               currentDevice.uid == systemDefault?.uid
-            {
-                DebugLogger.shared.info(
-                    "🔌 Preferred device '\(preferredDevice.name)' reconnected. Auto-switching...",
-                    source: "ASRService"
-                )
 
-                // If recording, restart with new device
-                if self.isRunning {
-                    DebugLogger.shared.info("Recording in progress - restarting engine with preferred device", source: "ASRService")
-                    self.restartEngineWithDevice(preferredDevice)
-                } else {
-                    // Just update the binding for next recording
-                    DebugLogger.shared.info("Not recording - updating binding for next session", source: "ASRService")
-                    _ = self.setEngineInputDevice(
-                        deviceID: preferredDevice.id,
-                        deviceUID: preferredDevice.uid,
-                        deviceName: preferredDevice.name
-                    )
-                }
-            }
-        }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let cachedUIDs = self.cachedDeviceUIDs
 
-        // Check for newly connected Bluetooth devices (auto-switch)
-        for device in currentDevices {
-            if device.name.localizedCaseInsensitiveContains("airpods") ||
-                device.name.localizedCaseInsensitiveContains("bluetooth")
-            {
-                // Check if this is a newly appeared device
-                let wasAvailable = self.checkDeviceWasAvailable(device.uid)
-                if !wasAvailable {
-                    DebugLogger.shared.info(
-                        "🎧 New Bluetooth device detected: '\(device.name)'. Auto-switching...",
-                        source: "ASRService"
-                    )
+                DebugLogger.shared.debug("Current input devices: \(currentDevices.map { $0.name }.joined(separator: ", "))", source: "ASRService")
 
-                    // Update preferred device setting
-                    SettingsStore.shared.preferredInputDeviceUID = device.uid
-                    DebugLogger.shared.debug("Updated preferred input device to: \(device.uid)", source: "ASRService")
+                // Check if preferred device is now available (for auto-switch)
+                if let preferredUID,
+                   let preferredDevice = currentDevices.first(where: { $0.uid == preferredUID })
+                {
+                    if let currentDevice = self.getCurrentlyBoundInputDevice(),
+                       currentDevice.uid != preferredUID,
+                       currentDevice.uid == systemDefault?.uid
+                    {
+                        DebugLogger.shared.info(
+                            "🔌 Preferred device '\(preferredDevice.name)' reconnected. Auto-switching...",
+                            source: "ASRService"
+                        )
 
-                    // If recording, restart with new device
-                    if self.isRunning {
-                        DebugLogger.shared.info("Recording in progress - restarting engine with new Bluetooth device", source: "ASRService")
-                        self.restartEngineWithDevice(device)
-                    } else {
-                        DebugLogger.shared.info("Not recording - Bluetooth device will be used on next recording", source: "ASRService")
+                        if self.isRunning {
+                            DebugLogger.shared.info("Recording in progress - restarting engine with preferred device", source: "ASRService")
+                            self.restartEngineWithDevice(preferredDevice)
+                        } else {
+                            DebugLogger.shared.info("Not recording - updating binding for next session", source: "ASRService")
+                            _ = self.setEngineInputDevice(
+                                deviceID: preferredDevice.id,
+                                deviceUID: preferredDevice.uid,
+                                deviceName: preferredDevice.name
+                            )
+                        }
                     }
                 }
+
+                // Check for newly connected Bluetooth devices (auto-switch)
+                for device in currentDevices {
+                    if device.name.localizedCaseInsensitiveContains("airpods") ||
+                        device.name.localizedCaseInsensitiveContains("bluetooth")
+                    {
+                        if !cachedUIDs.contains(device.uid) {
+                            DebugLogger.shared.info(
+                                "🎧 New Bluetooth device detected: '\(device.name)'. Auto-switching...",
+                                source: "ASRService"
+                            )
+
+                            SettingsStore.shared.preferredInputDeviceUID = device.uid
+                            DebugLogger.shared.debug("Updated preferred input device to: \(device.uid)", source: "ASRService")
+
+                            if self.isRunning {
+                                DebugLogger.shared.info("Recording in progress - restarting engine with new Bluetooth device", source: "ASRService")
+                                self.restartEngineWithDevice(device)
+                            } else {
+                                DebugLogger.shared.info("Not recording - Bluetooth device will be used on next recording", source: "ASRService")
+                            }
+                        }
+                    }
+                }
+
+                self.cacheCurrentDeviceList(currentDevices)
             }
         }
-
-        // Cache device list for next comparison
-        self.cacheCurrentDeviceList(currentDevices)
     }
 
     /// Handles device availability changes (device disconnected or reconnected)
@@ -1557,29 +1683,65 @@ final class ASRService: ObservableObject {
         if status == noErr, isAlive == 0 {
             // Device disconnected
             DebugLogger.shared.warning("❌ Monitored device (ID: \(deviceID)) DISCONNECTED", source: "ASRService")
+            self.stopMonitoringDevice()
 
             if self.isRunning {
-                // Cancel recording if device disconnects during recording
-                DebugLogger.shared.error(
-                    "🛑 Recording CANCELLED: Audio device disconnected during recording",
+                // Instead of cancelling, try to hot-swap to another available device
+                // so the recording continues seamlessly.
+                DebugLogger.shared.info(
+                    "🔄 Device died during recording — attempting hot-swap to fallback device",
                     source: "ASRService"
                 )
 
-                Task { @MainActor in
-                    await self.stopWithoutTranscription()
+                self.removeEngineTap()
+                self.engine.stop()
+                // Release dead engine on background thread (dealloc can block in CoreAudio)
+                let oldEngine = self.engineStorage
+                self.engineStorage = nil
+                if let oldEngine {
+                    DispatchQueue.global(qos: .utility).async { _ = oldEngine }
+                }
 
-                    // Notify user
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("ASRServiceDeviceDisconnected"),
-                        object: nil,
-                        userInfo: ["errorMessage": "Recording cancelled: Audio device disconnected"]
-                    )
+                // Query available devices off-main after a short delay for CoreAudio to settle
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    Thread.sleep(forTimeInterval: 0.3)
+                    let availableInputs = AudioDevice.listInputDevices()
+                    let defaultDevice = AudioDevice.getDefaultInputDevice()
+
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.isRunning else { return }
+
+                        guard let fallback = defaultDevice ?? availableInputs.first else {
+                            DebugLogger.shared.error("🛑 No fallback device — cancelling recording", source: "ASRService")
+                            Task { @MainActor in
+                                await self.stopWithoutTranscription()
+                                NotificationCenter.default.post(
+                                    name: NSNotification.Name("ASRServiceDeviceDisconnected"),
+                                    object: nil,
+                                    userInfo: ["errorMessage": "Recording cancelled: No audio device available"]
+                                )
+                            }
+                            return
+                        }
+
+                        DebugLogger.shared.info("🔄 Hot-swapping to: '\(fallback.name)'", source: "ASRService")
+                        do {
+                            try self.configureSession()
+                            _ = self.setEngineInputDevice(
+                                deviceID: fallback.id, deviceUID: fallback.uid, deviceName: fallback.name
+                            )
+                            try self.startEngine()
+                            try self.setupEngineTap()
+                            self.startMonitoringDevice(fallback.id)
+                            DebugLogger.shared.info("✅ Hot-swap successful — recording continues with '\(fallback.name)'", source: "ASRService")
+                        } catch {
+                            DebugLogger.shared.error("❌ Hot-swap failed: \(error)", source: "ASRService")
+                            Task { @MainActor in await self.stopWithoutTranscription() }
+                        }
+                    }
                 }
             } else {
                 DebugLogger.shared.info("Not recording - device disconnect handled gracefully", source: "ASRService")
-                // Just stop monitoring - don't try to set engine device when engine may not exist
-                self.stopMonitoringDevice()
-                DebugLogger.shared.info("✅ Stopped monitoring disconnected device", source: "ASRService")
             }
         } else if status == noErr, isAlive != 0 {
             DebugLogger.shared.info("✅ Device (ID: \(deviceID)) is still alive", source: "ASRService")
@@ -1659,10 +1821,6 @@ final class ASRService: ObservableObject {
     // Device caching for change detection
     private var cachedDeviceUIDs: Set<String> = []
 
-    private func checkDeviceWasAvailable(_ uid: String) -> Bool {
-        return self.cachedDeviceUIDs.contains(uid)
-    }
-
     private func cacheCurrentDeviceList(_ devices: [AudioDevice.Device]) {
         self.cachedDeviceUIDs = Set(devices.map { $0.uid })
     }
@@ -1694,6 +1852,11 @@ final class ASRService: ObservableObject {
     func ensureAsrReady(progressHandler: ((Double) -> Void)?) async throws {
         let provider = self.transcriptionProvider
         let providerKey = "\(type(of: provider)):\(provider.name)"
+        let model = SettingsStore.shared.selectedSpeechModel
+        DebugLogger.shared.info(
+            "ensureAsrReady() requested for model=\(model.id) [supportsStreaming=\(model.supportsStreaming)] provider=\(providerKey)",
+            source: "ASRService"
+        )
 
         // Single-flight: if a prepare is already running for this provider, await it.
         if let task = ensureReadyTask, ensureReadyProviderKey == providerKey {
@@ -1718,9 +1881,15 @@ final class ASRService: ObservableObject {
     }
 
     private func performEnsureAsrReady(provider: TranscriptionProvider, externalProgressHandler: ((Double) -> Void)? = nil) async throws {
+        DebugLogger.shared.debug(
+            "ensureAsrReady(begin): provider=\(provider.name), providerReady=\(provider.isReady), isAsrReady=\(self.isAsrReady), isRunning=\(self.isRunning)",
+            source: "ASRService"
+        )
+
         // Check if already ready
         if self.isAsrReady, provider.isReady {
             DebugLogger.shared.debug("ASR already ready with loaded models, skipping initialization", source: "ASRService")
+            self.refreshWordBoostStatus()
             return
         }
 
@@ -1733,11 +1902,13 @@ final class ASRService: ObservableObject {
 
         let totalStartTime = Date()
         do {
+            let initializationStart = Date()
             DebugLogger.shared.info("=== ASR INITIALIZATION START ===", source: "ASRService")
-            DebugLogger.shared.info("Using provider: \(provider.name)", source: "ASRService")
+            DebugLogger.shared.info("Using provider: \(provider.name) [providerReady=\(provider.isReady)]", source: "ASRService")
 
             let modelsAlreadyCached = provider.modelsExistOnDisk()
             DebugLogger.shared.info("Models already cached on disk: \(modelsAlreadyCached)", source: "ASRService")
+            DebugLogger.shared.debug("Model cache lookup complete in \(String(format: "%.3f", Date().timeIntervalSince(totalStartTime)))s", source: "ASRService")
 
             // Suppress stderr noise during model loading (ALWAYS restore, even on failure).
             let originalStderr = dup(STDERR_FILENO)
@@ -1773,7 +1944,7 @@ final class ASRService: ObservableObject {
                     self.isDownloadingModel = true
                     self.isLoadingModel = false
                     self.downloadProgress = nil
-                    self.startParakeetDownloadProgressMonitor()
+                    self.stopDownloadProgressMonitor()
                     DebugLogger.shared.info("⬇️ DOWNLOADING model...", source: "ASRService")
                 }
             }
@@ -1781,14 +1952,18 @@ final class ASRService: ObservableObject {
             // Use the transcription provider to prepare models
             let downloadStartTime = Date()
             DebugLogger.shared.info("Calling transcriptionProvider.prepare()...", source: "ASRService")
-            try await provider.prepare(progressHandler: { [weak self] progress in
-                DispatchQueue.main.async {
-                    let clamped = max(0.0, min(1.0, progress))
-                    self?.downloadProgress = clamped
-                    // Also call external progress handler if provided
-                    externalProgressHandler?(clamped)
+            try await self.prepareProviderWithRecovery(
+                provider: provider,
+                modelsAlreadyCached: modelsAlreadyCached,
+                progressHandler: { [weak self] progress in
+                    DispatchQueue.main.async {
+                        let clamped = max(0.0, min(1.0, progress))
+                        let monotonic = max(self?.downloadProgress ?? 0.0, clamped)
+                        self?.downloadProgress = monotonic
+                        externalProgressHandler?(monotonic)
+                    }
                 }
-            })
+            )
             let downloadDuration = Date().timeIntervalSince(downloadStartTime)
             DebugLogger.shared.info("✓ Provider preparation completed in \(String(format: "%.1f", downloadDuration)) seconds", source: "ASRService")
 
@@ -1806,11 +1981,12 @@ final class ASRService: ObservableObject {
                 self.modelsExistOnDisk = true
             }
 
-            let totalDuration = Date().timeIntervalSince(totalStartTime)
+            let totalDuration = Date().timeIntervalSince(initializationStart)
             DebugLogger.shared.info("=== ASR INITIALIZATION COMPLETE ===", source: "ASRService")
             DebugLogger.shared.info("Total initialization time: \(String(format: "%.1f", totalDuration)) seconds", source: "ASRService")
 
             self.isAsrReady = true
+            self.refreshWordBoostStatus()
         } catch {
             DebugLogger.shared.error("ASR initialization failed with error: \(error)", source: "ASRService")
             DebugLogger.shared.error("Error details: \(error.localizedDescription)", source: "ASRService")
@@ -1822,6 +1998,65 @@ final class ASRService: ObservableObject {
             }
             throw error
         }
+    }
+
+    private func prepareProviderWithRecovery(
+        provider: TranscriptionProvider,
+        modelsAlreadyCached: Bool,
+        progressHandler: @escaping (Double) -> Void
+    ) async throws {
+        let start = Date()
+        var firstError: Error?
+        do {
+            try await provider.prepare(progressHandler: progressHandler)
+            DebugLogger.shared.info(
+                "ASRService: Provider '\(provider.name)' prepared successfully in \(String(format: "%.2f", Date().timeIntervalSince(start)))s",
+                source: "ASRService"
+            )
+            return
+        } catch {
+            firstError = error
+            DebugLogger.shared.error("ASRService: First prepare attempt for \(provider.name) failed after \(String(format: "%.2f", Date().timeIntervalSince(start)))s", source: "ASRService")
+            DebugLogger.shared.warning(
+                "ASRService: First prepare failed for \(provider.name): \(error). " +
+                    "Attempting a single recovery by clearing provider cache.",
+                source: "ASRService"
+            )
+        }
+
+        guard modelsAlreadyCached else {
+            DebugLogger.shared.error(
+                "ASRService: Provider cache was empty; recovery retry disabled after first failure for \(provider.name).",
+                source: "ASRService"
+            )
+            throw NSError(
+                domain: "ASRService",
+                code: -2000,
+                userInfo: [NSLocalizedDescriptionKey: "Provider preparation failed: \(self.errorSummary(from: firstError))"]
+            )
+        }
+
+        do {
+            DebugLogger.shared.info("ASRService: Clearing provider cache before retry for \(provider.name)", source: "ASRService")
+            try await provider.clearCache()
+        } catch {
+            DebugLogger.shared.warning(
+                "ASRService: Provider cache clear failed for \(provider.name): \(error)",
+                source: "ASRService"
+            )
+        }
+
+        // One strict retry. If this fails, we let the caller handle the error.
+        try await provider.prepare(progressHandler: progressHandler)
+        DebugLogger.shared.info(
+            "ASRService: Provider '\(provider.name)' prepared successfully after cache-clear retry",
+            source: "ASRService"
+        )
+    }
+
+    private func errorSummary(from error: Error?) -> String {
+        if let error { return error.localizedDescription }
+        return "Unknown error"
     }
 
     private func startParakeetDownloadProgressMonitor() {
@@ -2058,7 +2293,7 @@ final class ASRService: ObservableObject {
         do {
             DebugLogger.shared.debug("Streaming chunk starting transcription (samples: \(chunk.count)) using \(self.transcriptionProvider.name)", source: "ASRService")
             let result = try await transcriptionExecutor.run { [provider = self.transcriptionProvider] in
-                try await provider.transcribe(chunk)
+                try await provider.transcribeStreaming(chunk)
             }
 
             let duration = Date().timeIntervalSince(startTime)
@@ -2068,6 +2303,7 @@ final class ASRService: ObservableObject {
             )
             let rawText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             let newText = ASRService.applyCustomDictionary(ASRService.removeFillerWords(rawText))
+            self.recordWordBoostHitIfAny(transcribedText: newText)
 
             // Mark first transcription as complete to clear loading state
             if !self.hasCompletedFirstTranscription {

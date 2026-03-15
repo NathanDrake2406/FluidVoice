@@ -45,6 +45,8 @@ struct SettingsView: View {
     @State private var showAnalyticsPrivacy: Bool = false
     @State private var pendingAnalyticsValue: Bool? = nil
     @State private var showAreYouSureToStopAnalytics: Bool = false
+    @State private var rollbackVersion: String = ""
+    @State private var isRollingBack: Bool = false
 
     let hotkeyManager: GlobalHotkeyManager?
     let menuBarManager: MenuBarManager
@@ -94,6 +96,10 @@ struct SettingsView: View {
         )
     }
 
+    private var currentAppVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+    }
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 16) {
@@ -118,14 +124,14 @@ struct SettingsView: View {
                             )
                             Divider().opacity(0.2)
 
-                            // Show in Dock
+                            // Hide from Dock & App Switcher
                             self.settingsToggleRow(
-                                title: "Show in Dock",
-                                description: "Display FluidVoice icon in the Dock",
+                                title: "Hide from Dock & App Switcher",
+                                description: "Keep FluidVoice in the menu bar only (hides Dock icon and Cmd+Tab entry)",
                                 footnote: "Note: May require app restart to take effect.",
                                 isOn: Binding(
-                                    get: { SettingsStore.shared.showInDock },
-                                    set: { SettingsStore.shared.showInDock = $0 }
+                                    get: { SettingsStore.shared.hideFromDockAndAppSwitcher },
+                                    set: { SettingsStore.shared.hideFromDockAndAppSwitcher = $0 }
                                 )
                             )
                             Divider().opacity(0.2)
@@ -180,38 +186,27 @@ struct SettingsView: View {
                             }
                             Divider().opacity(0.2)
 
-                            self.settingsToggleRow(
-                                title: "Transcription Sounds",
-                                description: "Play a short sound when dictation or command recording starts.",
-                                isOn: Binding(
-                                    get: { SettingsStore.shared.enableTranscriptionSounds },
-                                    set: { SettingsStore.shared.enableTranscriptionSounds = $0 }
-                                )
-                            )
-
-                            if SettingsStore.shared.enableTranscriptionSounds {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Start Sound")
-                                            .font(.body)
-                                        Text("Choose which sound plays when recording starts.")
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    Spacer()
-
-                                    Picker("", selection: Binding(
-                                        get: { SettingsStore.shared.transcriptionStartSound },
-                                        set: { SettingsStore.shared.transcriptionStartSound = $0 }
-                                    )) {
-                                        ForEach(SettingsStore.TranscriptionStartSound.allCases) { option in
-                                            Text(option.displayName).tag(option)
-                                        }
-                                    }
-                                    .pickerStyle(.menu)
-                                    .frame(width: 170, alignment: .trailing)
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Transcription Sounds")
+                                        .font(.body)
+                                    Text("Choose which sound plays when recording starts. Select None to disable.")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
                                 }
+
+                                Spacer()
+
+                                Picker("", selection: Binding(
+                                    get: { SettingsStore.shared.transcriptionStartSound },
+                                    set: { SettingsStore.shared.transcriptionStartSound = $0 }
+                                )) {
+                                    ForEach(SettingsStore.TranscriptionStartSound.allCases) { option in
+                                        Text(option.displayName).tag(option)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 170, alignment: .trailing)
                             }
 
                             Divider().opacity(0.2)
@@ -243,6 +238,10 @@ struct SettingsView: View {
                                         .font(.caption)
                                         .foregroundStyle(.tertiary)
                                 }
+
+                                Text("Current version: \(self.currentAppVersion)")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
                             }
 
                             // Update Buttons
@@ -285,8 +284,78 @@ struct SettingsView: View {
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.regular)
+
+                                Button(self.rollbackVersion.isEmpty ? "Rollback" : "Rollback to \(self.rollbackVersion)") {
+                                    guard !self.isRollingBack else { return }
+
+                                    let infoText = self.rollbackVersion.isEmpty ? "your previously installed version" : self.rollbackVersion
+                                    let targetVersion = self.rollbackVersion
+                                    let confirm = NSAlert()
+                                    confirm.messageText = "Rollback to \(infoText)?"
+                                    confirm.informativeText = "This will restore a previous app version and relaunch FluidVoice."
+                                    confirm.alertStyle = .warning
+                                    confirm.addButton(withTitle: "Rollback")
+                                    confirm.addButton(withTitle: "Cancel")
+
+                                    guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+                                    self.isRollingBack = true
+                                    Task {
+                                        defer {
+                                            Task { @MainActor in
+                                                self.isRollingBack = false
+                                            }
+                                        }
+
+                                        do {
+                                            try await SimpleUpdater.shared.rollbackToLatestBackup()
+                                            await MainActor.run {
+                                                let success = NSAlert()
+                                                success.messageText = "Rollback Successful"
+                                                success.informativeText = "Rolled back to \(targetVersion). FluidVoice will relaunch shortly."
+                                                success.alertStyle = .informational
+                                                success.addButton(withTitle: "Report Bug")
+                                                success.addButton(withTitle: "OK")
+                                                let response = success.runModal()
+                                                if response == .alertFirstButtonReturn {
+                                                    self.openIssueReportingPage()
+                                                }
+                                            }
+                                        } catch {
+                                            await MainActor.run {
+                                                let fail = NSAlert()
+                                                fail.messageText = "Rollback Failed"
+                                                fail.informativeText = error.localizedDescription
+                                                fail.alertStyle = .critical
+                                                fail.addButton(withTitle: "OK")
+                                                fail.runModal()
+                                                self.refreshRollbackState()
+                                            }
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.regular)
+                                .disabled(self.rollbackVersion.isEmpty || self.isRollingBack)
+                                .opacity(self.isRollingBack ? 0.7 : 1.0)
+
+                                Button("Get Previous Builds") {
+                                    self.openPreviousBuildPicker()
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.regular)
                             }
                             .padding(.top, 12)
+
+                            if self.rollbackVersion.isEmpty {
+                                Text("No rollback backup found.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("Rollback target: \(self.rollbackVersion)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                     .padding(16)
@@ -445,8 +514,8 @@ struct SettingsView: View {
                                     self.shortcutRow(
                                         icon: "pencil.and.outline",
                                         iconColor: .secondary,
-                                        title: "Write Mode",
-                                        description: "Select text and speak how to rewrite, or write new content",
+                                        title: "Edit Mode",
+                                        description: "Select text and speak how to edit, or generate new content",
                                         shortcut: self.rewriteShortcut,
                                         isRecording: self.isRecordingRewriteShortcut,
                                         isEnabled: self.$rewriteShortcutEnabled,
@@ -795,10 +864,10 @@ struct SettingsView: View {
                     .padding(16)
                 }
 
-                // Visualization Sensitivity Card
+                // Overlay Settings Card
                 ThemedCard(style: .standard) {
                     VStack(alignment: .leading, spacing: 14) {
-                        Label("Visualization", systemImage: "waveform")
+                        Label("Overlay", systemImage: "waveform")
                             .font(.headline)
                             .foregroundStyle(.primary)
 
@@ -980,8 +1049,8 @@ struct SettingsView: View {
 
                         VStack(alignment: .leading, spacing: 8) {
                             self.settingsToggleRow(
-                                title: "Enable Debug Logs",
-                                description: "Capture and show detailed app activity.",
+                                title: "Show Debug Logs in App",
+                                description: "File logs are always collected for diagnostics.",
                                 isOn: Binding(
                                     get: { SettingsStore.shared.enableDebugLogs },
                                     set: { SettingsStore.shared.enableDebugLogs = $0 }
@@ -1006,6 +1075,26 @@ struct SettingsView: View {
                             Text("The debug log contains detailed information about app operations and can help with troubleshooting.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            Text("Crash diagnostics are written to Library/Logs/Fluid/Fluid.log by default.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            #if DEBUG
+                            Divider().padding(.vertical, 8)
+
+                            Button(role: .destructive) {
+                                self.settings.resetOnboardingProgress()
+                                DebugLogger.shared.info("Developer action: onboarding reset", source: "SettingsView")
+                            } label: {
+                                Label("Reset Onboarding (Dev)", systemImage: "arrow.counterclockwise")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
+
+                            Text("Developer-only action. Immediately re-enters first-run onboarding flow.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            #endif
                         }
                     }
                     .padding(16)
@@ -1083,11 +1172,71 @@ struct SettingsView: View {
                 // This avoids the CoreAudio/SwiftUI AttributeGraph race condition that causes EXC_BAD_ACCESS.
                 self.cachedDefaultInputName = AudioDevice.getDefaultInputDevice()?.name ?? ""
                 self.cachedDefaultOutputName = AudioDevice.getDefaultOutputDevice()?.name ?? ""
+                self.refreshRollbackState()
             }
         }
         .onChange(of: self.visualizerNoiseThreshold) { _, newValue in
             SettingsStore.shared.visualizerNoiseThreshold = newValue
         }
+    }
+
+    private func refreshRollbackState() {
+        self.rollbackVersion = SimpleUpdater.shared.latestRollbackVersion() ?? ""
+    }
+
+    private func openIssueReportingPage() {
+        guard let url = URL(string: "https://github.com/altic-dev/Fluid-oss/issues/new/choose") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func openPreviousBuildPicker() {
+        Task { @MainActor in
+            do {
+                let options = try await SimpleUpdater.shared.fetchRecentReleaseBuildOptions(
+                    owner: "altic-dev",
+                    repo: "Fluid-oss",
+                    limit: 3
+                )
+                self.presentPreviousBuildPicker(options)
+            } catch {
+                self.openAllReleasesPage()
+            }
+        }
+    }
+
+    private func presentPreviousBuildPicker(_ options: [SimpleUpdater.ReleaseBuildOption]) {
+        guard !options.isEmpty else {
+            self.openAllReleasesPage()
+            return
+        }
+
+        let picker = NSAlert()
+        picker.messageText = "Download Previous Build"
+        picker.informativeText = "No local rollback backup was found. Choose a recent release build:"
+        picker.alertStyle = .informational
+
+        for option in options {
+            picker.addButton(withTitle: option.version)
+        }
+        picker.addButton(withTitle: "All Releases")
+        picker.addButton(withTitle: "Cancel")
+
+        let response = picker.runModal()
+        let first = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        let index = response.rawValue - first
+
+        if index >= 0, index < options.count {
+            NSWorkspace.shared.open(options[index].url)
+            return
+        }
+        if index == options.count {
+            self.openAllReleasesPage()
+        }
+    }
+
+    private func openAllReleasesPage() {
+        guard let url = URL(string: "https://github.com/altic-dev/Fluid-oss/releases") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func applyAnalyticsConsentChange(_ enabled: Bool) {

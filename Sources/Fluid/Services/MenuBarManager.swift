@@ -17,6 +17,7 @@ final class MenuBarManager: ObservableObject {
     // Cached menu items to avoid rebuilding entire menu
     private var statusMenuItem: NSMenuItem?
     private var aiMenuItem: NSMenuItem?
+    private var rollbackMenuItem: NSMenuItem?
 
     // References to app state
     private weak var asrService: ASRService?
@@ -352,6 +353,18 @@ final class MenuBarManager: ObservableObject {
 
         menu.addItem(.separator())
 
+        let rollbackMenuItem = NSMenuItem(
+            title: "Rollback to Previous Version...",
+            action: #selector(rollbackToPreviousVersion(_:)),
+            keyEquivalent: ""
+        )
+        rollbackMenuItem.target = self
+        rollbackMenuItem.isEnabled = SimpleUpdater.shared.hasRollbackBackup()
+        menu.addItem(rollbackMenuItem)
+        self.rollbackMenuItem = rollbackMenuItem
+
+        menu.addItem(.separator())
+
         // Quit
         let quitItem = NSMenuItem(
             title: "Quit Fluid Voice",
@@ -385,14 +398,34 @@ final class MenuBarManager: ObservableObject {
         // Update AI toggle text
         let aiTitle = self.aiProcessingEnabled ? "Disable AI Processing" : "Enable AI Processing"
         self.aiMenuItem?.title = aiTitle
+
+        // Update rollback availability text
+        self.rollbackMenuItem?.isEnabled = SimpleUpdater.shared.hasRollbackBackup()
+    }
+
+    /// Centralized entry point to update AI post-processing enablement.
+    /// Use this instead of writing `aiProcessingEnabled` directly so all state stays in sync.
+    func setAIProcessingEnabled(_ enabled: Bool) {
+        guard self.aiProcessingEnabled != enabled else {
+            // Ensure menu text stays correct even if caller repeats the same value.
+            self.updateMenu()
+            return
+        }
+        self.aiProcessingEnabled = enabled
+        SettingsStore.shared.enableAIProcessing = enabled
+        self.updateMenu()
+    }
+
+    /// Toggle AI post-processing and return the new value.
+    @discardableResult
+    func toggleAIProcessingEnabled() -> Bool {
+        let next = !self.aiProcessingEnabled
+        self.setAIProcessingEnabled(next)
+        return next
     }
 
     @objc private func toggleAIProcessing() {
-        self.aiProcessingEnabled.toggle()
-        // Persist and broadcast change
-        SettingsStore.shared.enableAIProcessing = self.aiProcessingEnabled
-        // If a ContentView has bound to MenuBarManager, its onChange sync will mirror this
-        self.updateMenu()
+        _ = self.toggleAIProcessingEnabled()
     }
 
     @objc private func checkForUpdates(_ sender: Any?) {
@@ -429,6 +462,109 @@ final class MenuBarManager: ObservableObject {
         }
     }
 
+    @objc private func rollbackToPreviousVersion(_ sender: Any?) {
+        let availableVersion = SimpleUpdater.shared.latestRollbackVersion() ?? ""
+        guard !availableVersion.isEmpty else {
+            let msg = NSAlert()
+            msg.messageText = "No rollback backup found"
+            msg.informativeText = "No previous version backup is available on this device."
+            msg.alertStyle = .informational
+            msg.addButton(withTitle: "Get Previous Builds")
+            msg.addButton(withTitle: "Cancel")
+            if msg.runModal() == .alertFirstButtonReturn {
+                self.openPreviousBuildPicker()
+            }
+            return
+        }
+
+        let confirm = NSAlert()
+        confirm.messageText = "Rollback to \(availableVersion)?"
+        confirm.informativeText = "This will restore the backup and relaunch FluidVoice."
+        confirm.alertStyle = .warning
+        confirm.addButton(withTitle: "Rollback")
+        confirm.addButton(withTitle: "Cancel")
+
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        Task { @MainActor in
+            do {
+                try await SimpleUpdater.shared.rollbackToLatestBackup()
+                let success = NSAlert()
+                success.messageText = "Rollback Successful"
+                success.informativeText = "Rolled back to \(availableVersion). FluidVoice will relaunch shortly."
+                success.alertStyle = .informational
+                success.addButton(withTitle: "Report Bug")
+                success.addButton(withTitle: "OK")
+                let response = success.runModal()
+                if response == .alertFirstButtonReturn {
+                    self.openIssueReportingPage()
+                }
+            } catch {
+                let fail = NSAlert()
+                fail.messageText = "Rollback Failed"
+                fail.informativeText = error.localizedDescription
+                fail.alertStyle = .critical
+                fail.addButton(withTitle: "OK")
+                fail.runModal()
+            }
+        }
+    }
+
+    private func openIssueReportingPage() {
+        guard let url = URL(string: "https://github.com/altic-dev/Fluid-oss/issues/new/choose") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func openPreviousBuildPicker() {
+        Task { @MainActor in
+            do {
+                let options = try await SimpleUpdater.shared.fetchRecentReleaseBuildOptions(
+                    owner: "altic-dev",
+                    repo: "Fluid-oss",
+                    limit: 3
+                )
+                self.presentPreviousBuildPicker(options)
+            } catch {
+                self.openAllReleasesPage()
+            }
+        }
+    }
+
+    private func presentPreviousBuildPicker(_ options: [SimpleUpdater.ReleaseBuildOption]) {
+        guard !options.isEmpty else {
+            self.openAllReleasesPage()
+            return
+        }
+
+        let picker = NSAlert()
+        picker.messageText = "Download Previous Build"
+        picker.informativeText = "Choose one of the latest release builds to install manually."
+        picker.alertStyle = .informational
+
+        for option in options {
+            picker.addButton(withTitle: option.version)
+        }
+        picker.addButton(withTitle: "All Releases")
+        picker.addButton(withTitle: "Cancel")
+
+        let response = picker.runModal()
+        let first = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        let index = response.rawValue - first
+
+        if index >= 0, index < options.count {
+            NSWorkspace.shared.open(options[index].url)
+            return
+        }
+        if index == options.count {
+            self.openAllReleasesPage()
+        }
+    }
+
+    private func openAllReleasesPage() {
+        guard let url = URL(string: "https://github.com/altic-dev/Fluid-oss/releases") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     @objc private func openMainWindow() {
         // First, unhide the app if it's hidden
         if NSApp.isHidden {
@@ -444,7 +580,7 @@ final class MenuBarManager: ObservableObject {
         if let window = hostedWindow, window.isReleasedWhenClosed == false {
             self.ensureUsableMainWindow(window)
             window.animationBehavior = .none
-            window.makeKeyAndOrderFront(nil)
+            self.bringToFront(window)
         } else if let window = NSApp.windows.first(where: { win in
             // Only normal app windows (exclude overlays/panels/menus)
             guard win.level == .normal else { return false }
@@ -457,7 +593,7 @@ final class MenuBarManager: ObservableObject {
         }) {
             self.ensureUsableMainWindow(window)
             window.animationBehavior = .none
-            window.makeKeyAndOrderFront(nil)
+            self.bringToFront(window)
             self.hostedWindow = window
         } else {
             // If there is no suitable window (or it's minimized), create a fresh one.
@@ -466,6 +602,9 @@ final class MenuBarManager: ObservableObject {
 
         // Final attempt: ensure app is active and visible
         NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     @objc private func openPreferences() {
@@ -481,6 +620,11 @@ final class MenuBarManager: ObservableObject {
             self?.requestedNavigationDestination = nil
             self?.requestedNavigationDestination = .preferences
         }
+    }
+
+    /// Public entry-point for non-menu UI surfaces (e.g. overlay controls) to open Preferences.
+    func openPreferencesFromUI() {
+        self.openPreferences()
     }
 
     /// Create and present a fresh main window hosting `ContentView`
@@ -506,11 +650,14 @@ final class MenuBarManager: ObservableObject {
         window.isReleasedWhenClosed = false
         window.contentViewController = hostingController
         window.setFrame(self.defaultWindowFrame(), display: false)
-        window.makeKeyAndOrderFront(nil)
+        self.bringToFront(window)
         self.hostedWindow = window
 
         // Bring app to front in case we're running as an accessory app (no Dock)
         NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     private func ensureUsableMainWindow(_ window: NSWindow) {
@@ -533,5 +680,11 @@ final class MenuBarManager: ObservableObject {
             y: screenFrame.midY - size.height / 2
         )
         return NSRect(origin: origin, size: size)
+    }
+
+    private func bringToFront(_ window: NSWindow) {
+        // Keep ordering explicit to avoid "opened but behind other apps" behavior.
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
     }
 }

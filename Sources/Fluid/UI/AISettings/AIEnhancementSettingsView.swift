@@ -10,6 +10,7 @@ struct AIEnhancementSettingsView: View {
     @State var fluid1InterestEmail: String = ""
     @State var fluid1InterestErrorMessage: String = ""
     @State var fluid1InterestIsSubmitting: Bool = false
+    @State var hoveredPromptCardKey: String? = nil
 
     var body: some View {
         self.aiConfigurationCard

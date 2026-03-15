@@ -15,20 +15,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateCheckTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Bring up file logging + crash handlers immediately during launch.
+        _ = FileLogger.shared
+        DebugLogger.shared.info("Application launched", source: "AppDelegate")
+
         // Initialize AppUpdater for automatic updates
         // Repository: https://github.com/altic-dev/Fluid-oss
         self.updater = AppUpdater(owner: "altic-dev", repo: "Fluid-oss")
 
-        // Request accessibility permissions for global hotkey monitoring
-        self.requestAccessibilityPermissions()
-
         // Initialize app settings (dock visibility, etc.)
         SettingsStore.shared.initializeAppSettings()
 
+        // Record first-open synchronously before async analytics bootstrap so
+        // onboarding initialization is deterministic on brand-new installs.
+        let isTrueFirstOpen = AnalyticsIdentityStore.shared.ensureFirstOpenRecorded()
+        SettingsStore.shared.bootstrapOnboardingState(isTrueFirstOpen: isTrueFirstOpen)
+
         AnalyticsService.shared.bootstrap()
 
-        let isFirstOpen = AnalyticsIdentityStore.shared.ensureFirstOpenRecorded()
-        if isFirstOpen {
+        if SettingsStore.shared.shouldPromptAccessibilityOnLaunch {
+            self.requestAccessibilityPermissions()
+        }
+
+        if isTrueFirstOpen {
             AnalyticsService.shared.capture(.appFirstOpen)
         }
         AnalyticsService.shared.capture(
@@ -42,14 +51,57 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Schedule periodic update checks every hour while app is running
         self.schedulePeriodicUpdateChecks()
 
+        // Bring the app to front on initial launch.
+        // Use a few delayed retries because SwiftUI window creation can lag app launch callbacks.
+        self.forceFrontOnLaunch()
+
         // Note: App UI is designed with dark color scheme in mind
         // All gradients and effects are optimized for dark mode
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        DebugLogger.shared.info("Application will terminate", source: "AppDelegate")
         // Clean up the update check timer
         self.updateCheckTimer?.invalidate()
         self.updateCheckTimer = nil
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Ensure dock-icon reopen always foregrounds FluidVoice.
+        sender.activate(ignoringOtherApps: true)
+
+        if let mainWindow = sender.windows.first(where: { win in
+            guard win.level == .normal else { return false }
+            guard win.styleMask.contains(.titled) else { return false }
+            return win.title == "FluidVoice" || win.title.contains("FluidVoice")
+        }) {
+            mainWindow.orderFrontRegardless()
+            mainWindow.makeKeyAndOrderFront(nil)
+        }
+
+        return true
+    }
+
+    private func forceFrontOnLaunch() {
+        for delay in [0.0, 0.12, 0.35] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                self.bringMainWindowToFront()
+            }
+        }
+    }
+
+    private func bringMainWindowToFront() {
+        NSApp.activate(ignoringOtherApps: true)
+
+        if let mainWindow = NSApp.windows.first(where: { win in
+            guard win.level == .normal else { return false }
+            guard win.styleMask.contains(.titled) else { return false }
+            return win.title == "FluidVoice" || win.title.contains("FluidVoice")
+        }) {
+            mainWindow.orderFrontRegardless()
+            mainWindow.makeKeyAndOrderFront(nil)
+        }
     }
 
     // MARK: - Periodic Update Checks

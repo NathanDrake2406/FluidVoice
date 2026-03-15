@@ -1,10 +1,12 @@
 import AppKit
 import Combine
+import CryptoKit
 import Foundation
 
 @MainActor
 final class RewriteModeService: ObservableObject {
     @Published var originalText: String = ""
+    @Published var selectedContextText: String = ""
     @Published var rewrittenText: String = ""
     @Published var streamingThinkingText: String = "" // Real-time thinking tokens for UI
     @Published var isProcessing = false
@@ -14,6 +16,24 @@ final class RewriteModeService: ObservableObject {
     private let textSelectionService = TextSelectionService.shared
     private let typingService = TypingService()
     private var thinkingBuffer: [String] = [] // Buffer thinking tokens
+    private var forcePromptTraceToConsole: Bool {
+        ProcessInfo.processInfo.environment["FLUID_PROMPT_TRACE"] == "1"
+    }
+
+    private var diagnosticsEnabled: Bool {
+        if ProcessInfo.processInfo.environment["FLUID_REWRITE_DIAGNOSTICS"] == "1" {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: "RewriteModeDiagnosticsEnabled")
+    }
+
+    private var shouldTracePromptProcessing: Bool {
+        if let explicit = UserDefaults.standard.object(forKey: "RewriteModePromptTraceEnabled") as? Bool {
+            return explicit
+        }
+        // Default OFF to avoid logging prompt/context content in normal usage.
+        return false
+    }
 
     struct Message: Identifiable, Equatable {
         let id = UUID()
@@ -29,9 +49,13 @@ final class RewriteModeService: ObservableObject {
     func captureSelectedText() -> Bool {
         if let text = textSelectionService.getSelectedText(), !text.isEmpty {
             self.originalText = text
+            self.selectedContextText = text
             self.rewrittenText = ""
             self.conversationHistory = []
             self.isWriteMode = false
+            if self.shouldTracePromptProcessing {
+                self.logPromptTrace("Captured selected context", value: text)
+            }
             return true
         }
         return false
@@ -40,9 +64,13 @@ final class RewriteModeService: ObservableObject {
     /// Start rewrite mode without selected text - user will provide text via voice
     func startWithoutSelection() {
         self.originalText = ""
+        self.selectedContextText = ""
         self.rewrittenText = ""
         self.conversationHistory = []
         self.isWriteMode = true
+        if self.shouldTracePromptProcessing {
+            self.logPromptTrace("Starting edit with no selected context", value: "<empty>")
+        }
     }
 
     /// Set the original text directly (from voice input when no text was selected)
@@ -54,6 +82,9 @@ final class RewriteModeService: ObservableObject {
 
     func processRewriteRequest(_ prompt: String) async {
         let startTime = Date()
+        self.appendDiagnosticLog(
+            "processRewriteRequest start | promptChars=\(prompt.count) | hadOriginal=\(!self.originalText.isEmpty) | contextChars=\(self.selectedContextText.count)"
+        )
         // If no original text, we're in "Write Mode" - generate content based on user's request
         if self.originalText.isEmpty {
             self.originalText = prompt
@@ -64,17 +95,23 @@ final class RewriteModeService: ObservableObject {
         } else {
             // Rewrite Mode: User has selected text and is giving instructions
             self.isWriteMode = false
+            let hasContext = !self.selectedContextText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
             if self.conversationHistory.isEmpty {
-                let rewritePrompt = """
-                Here is the text to rewrite:
+                let rewritePrompt: String
+                if hasContext {
+                    rewritePrompt = """
+                    User's instruction: \(prompt)
 
-                "\(originalText)"
+                    Apply the instruction to the selected context. Output ONLY the rewritten text, nothing else.
+                    """
+                } else {
+                    rewritePrompt = """
+                    User's instruction: \(prompt)
 
-                User's instruction: \(prompt)
-
-                Rewrite the text according to the instruction. Output ONLY the rewritten text, nothing else.
-                """
+                    Output ONLY the requested text, nothing else.
+                    """
+                }
                 self.conversationHistory.append(Message(role: .user, content: rewritePrompt))
             } else {
                 // Follow-up request
@@ -91,6 +128,9 @@ final class RewriteModeService: ObservableObject {
             self.conversationHistory.append(Message(role: .assistant, content: response))
             self.rewrittenText = response
             self.isProcessing = false
+            self.appendDiagnosticLog(
+                "processRewriteRequest success | writeMode=\(self.isWriteMode) | outputChars=\(response.count) | latency=\(String(format: "%.2fs", Date().timeIntervalSince(startTime)))"
+            )
 
             AnalyticsService.shared.capture(
                 .rewriteRunCompleted,
@@ -103,6 +143,9 @@ final class RewriteModeService: ObservableObject {
         } catch {
             self.conversationHistory.append(Message(role: .assistant, content: "Error: \(error.localizedDescription)"))
             self.isProcessing = false
+            self.appendDiagnosticLog(
+                "processRewriteRequest failure | writeMode=\(self.isWriteMode) | error=\(error.localizedDescription)"
+            )
 
             AnalyticsService.shared.capture(
                 .rewriteRunCompleted,
@@ -131,6 +174,7 @@ final class RewriteModeService: ObservableObject {
 
     func clearState() {
         self.originalText = ""
+        self.selectedContextText = ""
         self.rewrittenText = ""
         self.streamingThinkingText = ""
         self.conversationHistory = []
@@ -142,8 +186,56 @@ final class RewriteModeService: ObservableObject {
 
     private func callLLM(messages: [Message], isWriteMode: Bool) async throws -> String {
         let settings = SettingsStore.shared
-        // Use Write Mode's independent provider/model settings
-        let providerID = settings.rewriteModeSelectedProviderID
+        let promptMode: SettingsStore.PromptMode = .edit
+        let selectedProfile = settings.selectedPromptProfile(for: promptMode)
+        let selectedPromptName: String = {
+            if let profile = selectedProfile {
+                return profile.name.isEmpty ? "Untitled Prompt" : profile.name
+            }
+            return "Default Edit"
+        }()
+        let promptBody = settings.effectivePromptBody(for: promptMode)
+        let builtInDefaultPrompt = SettingsStore.defaultSystemPromptText(for: promptMode)
+        let systemPromptBeforeContext = settings.effectiveSystemPrompt(for: promptMode)
+        // Use global provider/model when linked, otherwise use Edit Mode's independent settings.
+        let providerID: String = {
+            if settings.rewriteModeLinkedToGlobal {
+                let globalProvider = settings.selectedProviderID
+                if self.isProviderVerified(globalProvider, settings: settings) {
+                    return globalProvider
+                }
+                return settings.rewriteModeSelectedProviderID
+            }
+            return settings.rewriteModeSelectedProviderID
+        }()
+
+        var systemPrompt = systemPromptBeforeContext
+        let contextText = self.selectedContextText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var contextBlock = ""
+        contextBlock = SettingsStore.runtimeContextBlock(
+            context: self.selectedContextText,
+            template: SettingsStore.contextTemplateText()
+        )
+        if !contextBlock.isEmpty {
+            systemPrompt = "\(systemPrompt)\n\n\(contextBlock)"
+            DebugLogger.shared.debug("Injected selected-text context into \(promptMode.rawValue) prompt", source: "RewriteModeService")
+        }
+
+        if self.shouldTracePromptProcessing {
+            let messageDump = messages.map {
+                let role = ($0.role == .user) ? "user" : "assistant"
+                return "[\(role)]\n\($0.content)"
+            }.joined(separator: "\n\n")
+            self.logPromptTrace("Mode", value: isWriteMode ? "Edit (write)" : "Edit (rewrite)")
+            self.logPromptTrace("Selected prompt profile", value: selectedPromptName)
+            self.logPromptTrace("Prompt body (custom/default body)", value: promptBody)
+            self.logPromptTrace("Built-in default system prompt (baseline)", value: builtInDefaultPrompt)
+            self.logPromptTrace("System prompt before context", value: systemPromptBeforeContext)
+            self.logPromptTrace("Selected context text", value: contextText.isEmpty ? "<empty>" : contextText)
+            self.logPromptTrace("Context block injected", value: contextBlock.isEmpty ? "<none>" : contextBlock)
+            self.logPromptTrace("Final system prompt sent to model", value: systemPrompt)
+            self.logPromptTrace("Conversation input (Q/history)", value: messageDump.isEmpty ? "<empty>" : messageDump)
+        }
 
         // Route to Apple Intelligence if selected
         if providerID == "apple-intelligence" {
@@ -152,8 +244,12 @@ final class RewriteModeService: ObservableObject {
                 let provider = AppleIntelligenceProvider()
                 let messageTuples = messages
                     .map { (role: $0.role == .user ? "user" : "assistant", content: $0.content) }
-                DebugLogger.shared.debug("Using Apple Intelligence for rewrite mode", source: "RewriteModeService")
-                return try await provider.processRewrite(messages: messageTuples, isWriteMode: isWriteMode)
+                DebugLogger.shared.debug("Using Apple Intelligence for edit mode", source: "RewriteModeService")
+                let output = try await provider.processRewrite(messages: messageTuples, systemPrompt: systemPrompt)
+                if self.shouldTracePromptProcessing {
+                    self.logPromptTrace("Model answer (A)", value: output)
+                }
+                return output
             }
             #endif
             throw NSError(
@@ -163,7 +259,27 @@ final class RewriteModeService: ObservableObject {
             )
         }
 
-        let model = settings.rewriteModeSelectedModel ?? "gpt-4.1"
+        let model: String = {
+            if settings.rewriteModeLinkedToGlobal {
+                let key: String
+                if ModelRepository.shared.isBuiltIn(providerID) {
+                    key = providerID
+                } else if providerID.hasPrefix("custom:") {
+                    key = providerID
+                } else {
+                    key = "custom:\(providerID)"
+                }
+                return settings.selectedModelByProvider[key]
+                    ?? settings.selectedModel
+                    ?? "gpt-4.1"
+            }
+            return settings.rewriteModeSelectedModel ?? "gpt-4.1"
+        }()
+        self.appendDiagnosticLog(
+            "LLM config | writeMode=\(isWriteMode) | linkedToGlobal=\(settings.rewriteModeLinkedToGlobal) | " +
+                "provider=\(providerID) | model=\(model) | profile=\(selectedPromptName) | " +
+                "contextChars=\(contextText.count) | contextInjected=\(!contextBlock.isEmpty)"
+        )
         let apiKey = settings.getAPIKey(for: providerID) ?? ""
 
         let baseURL: String
@@ -175,36 +291,6 @@ final class RewriteModeService: ObservableObject {
             baseURL = ModelRepository.shared.defaultBaseURL(for: "openai")
         }
 
-        // Different system prompts for each mode
-        let systemPrompt: String
-        if isWriteMode {
-            // Write Mode: Generate content based on user's request
-            systemPrompt = """
-            You are a helpful writing assistant. The user will ask you to write or generate text for them.
-
-            Examples of requests:
-            - "Write an email to my boss asking for time off"
-            - "Draft a reply saying I'll be there at 5"
-            - "Write a professional summary for LinkedIn"
-            - "Answer this: what is the capital of France"
-
-            Respond directly with the requested content. Be concise and helpful.
-            Output ONLY what they asked for - no explanations or preamble.
-            """
-        } else {
-            // Rewrite Mode: Transform selected text based on instructions
-            systemPrompt = """
-            You are a writing assistant that rewrites text according to user instructions. The user has selected existing text and wants you to transform it.
-
-            Your job:
-            - Follow the user's specific instructions for how to rewrite
-            - Maintain the core meaning unless asked to change it
-            - Apply the requested style, tone, or format changes
-
-            Output ONLY the rewritten text. No explanations, no quotes around the text, no preamble.
-            """
-        }
-
         // Build messages array for LLMClient
         var apiMessages: [[String: Any]] = [
             ["role": "system", "content": systemPrompt],
@@ -214,8 +300,9 @@ final class RewriteModeService: ObservableObject {
             apiMessages.append(["role": msg.role == .user ? "user" : "assistant", "content": msg.content])
         }
 
-        // Check streaming setting
-        let enableStreaming = settings.enableAIStreaming
+        // Edit Text mode does not need token-by-token UI updates.
+        // Keep this non-streaming to reduce CPU/battery churn on smaller devices.
+        let enableStreaming = false
 
         // Reasoning models (o1, o3, gpt-5) don't support temperature parameter at all
         let isReasoningModel = settings.isReasoningModel(model)
@@ -263,7 +350,7 @@ final class RewriteModeService: ObservableObject {
             }
         }
 
-        DebugLogger.shared.info("Using LLMClient for Write/Rewrite (streaming=\(enableStreaming))", source: "RewriteModeService")
+        DebugLogger.shared.info("Using LLMClient for Edit mode (streaming=\(enableStreaming))", source: "RewriteModeService")
 
         // Clear streaming buffers before starting
         if enableStreaming {
@@ -281,13 +368,71 @@ final class RewriteModeService: ObservableObject {
         // Log thinking if present (for debugging)
         if let thinking = response.thinking {
             DebugLogger.shared.debug("LLM thinking tokens extracted (\(thinking.count) chars)", source: "RewriteModeService")
+            if self.shouldTracePromptProcessing {
+                self.logPromptTrace("Model thinking", value: thinking)
+            }
         }
 
         DebugLogger.shared.debug("Response complete. Content length: \(response.content.count)", source: "RewriteModeService")
+        if self.shouldTracePromptProcessing {
+            self.logPromptTrace("Model answer (A)", value: response.content)
+        }
 
         // For non-streaming, we return the content directly
         // For streaming, rewrittenText is already updated via callback,
         // but we return the final content for consistency
         return response.content
+    }
+
+    private func logPromptTrace(_ title: String, value: String) {
+        let line = "[PromptTrace][Edit] \(title):\n\(value)"
+        if self.forcePromptTraceToConsole {
+            print(line)
+        }
+        self.appendDiagnosticLog(line)
+    }
+
+    private func appendDiagnosticLog(_ message: String) {
+        guard self.diagnosticsEnabled || self.forcePromptTraceToConsole else { return }
+        let line = "[RewriteModeService] \(message)"
+        FileLogger.shared.append(line: line)
+        DebugLogger.shared.debug(line, source: "RewriteModeService")
+    }
+
+    private func providerKey(for providerID: String) -> String {
+        if ModelRepository.shared.isBuiltIn(providerID) { return providerID }
+        if providerID.hasPrefix("custom:") { return providerID }
+        return "custom:\(providerID)"
+    }
+
+    private func providerBaseURL(for providerID: String, settings: SettingsStore) -> String {
+        if let saved = settings.savedProviders.first(where: { $0.id == providerID }) {
+            return saved.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if ModelRepository.shared.isBuiltIn(providerID) {
+            return ModelRepository.shared.defaultBaseURL(for: providerID).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return ""
+    }
+
+    private func providerFingerprint(baseURL: String, apiKey: String) -> String? {
+        let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBase.isEmpty else { return nil }
+        let input = "\(trimmedBase)|\(trimmedKey)"
+        let digest = SHA256.hash(data: Data(input.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func isProviderVerified(_ providerID: String, settings: SettingsStore) -> Bool {
+        let key = self.providerKey(for: providerID)
+        guard let stored = settings.verifiedProviderFingerprints[key] else { return false }
+        if providerID == "apple-intelligence" {
+            return stored == "apple-intelligence"
+        }
+        let baseURL = self.providerBaseURL(for: providerID, settings: settings)
+        let apiKey = settings.getAPIKey(for: providerID) ?? ""
+        let current = self.providerFingerprint(baseURL: baseURL, apiKey: apiKey)
+        return current == stored
     }
 }

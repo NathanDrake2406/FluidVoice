@@ -14,6 +14,7 @@ import SwiftUI
 
 enum OverlayMode: String {
     case dictation = "Dictation"
+    case edit = "Edit"
     case rewrite = "Rewrite"
     case write = "Write"
     case command = "Command"
@@ -190,9 +191,9 @@ final class NotchOverlayManager {
         }
 
         self.lastAudioPublisher = audioLevelPublisher
-        self.currentMode = mode
+        self.currentMode = self.normalizedOverlayMode(mode)
 
-        BottomOverlayWindowController.shared.show(audioPublisher: audioLevelPublisher, mode: mode)
+        BottomOverlayWindowController.shared.show(audioPublisher: audioLevelPublisher, mode: self.currentMode)
         self.isBottomOverlayVisible = true
     }
 
@@ -209,10 +210,11 @@ final class NotchOverlayManager {
         let currentGeneration = self.generation
 
         self.state = .showing
-        self.currentMode = mode
+        self.currentMode = self.normalizedOverlayMode(mode)
 
         // Update shared content state immediately
-        NotchContentState.shared.mode = mode
+        NotchContentState.shared.mode = self.currentMode
+        self.syncPromptPickerMode(for: self.currentMode)
         NotchContentState.shared.updateTranscription("")
 
         // Create notch with SwiftUI views
@@ -293,8 +295,22 @@ final class NotchOverlayManager {
     func setMode(_ mode: OverlayMode) {
         // Always update NotchContentState to ensure UI stays in sync
         // (can get out of sync during show/hide transitions)
-        self.currentMode = mode
-        NotchContentState.shared.mode = mode
+        let normalized = self.normalizedOverlayMode(mode)
+        self.currentMode = normalized
+        NotchContentState.shared.mode = normalized
+        self.syncPromptPickerMode(for: normalized)
+    }
+
+    func switchLiveOverlayMode(to promptMode: SettingsStore.PromptMode) {
+        guard !NotchContentState.shared.isProcessing else { return }
+        switch promptMode.normalized {
+        case .dictate:
+            self.setMode(.dictation)
+        case .edit:
+            self.setMode(.edit)
+        case .write, .rewrite:
+            self.setMode(.edit)
+        }
     }
 
     func updateTranscriptionText(_ text: String) {
@@ -403,6 +419,26 @@ final class NotchOverlayManager {
 
         guard self.commandOutputGeneration == currentGeneration else { return }
         self.commandOutputState = .visible
+    }
+
+    private func syncPromptPickerMode(for mode: OverlayMode) {
+        switch mode {
+        case .dictation:
+            NotchContentState.shared.promptPickerMode = .dictate
+        case .edit, .write, .rewrite:
+            NotchContentState.shared.promptPickerMode = .edit
+        case .command:
+            break
+        }
+    }
+
+    private func normalizedOverlayMode(_ mode: OverlayMode) -> OverlayMode {
+        switch mode {
+        case .write, .rewrite:
+            return .edit
+        case .dictation, .edit, .command:
+            return mode
+        }
     }
 
     /// Hide expanded command output notch - force close regardless of hover state
