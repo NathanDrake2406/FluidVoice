@@ -25,11 +25,40 @@ final class MediaPlaybackService {
     ///
     /// - Returns: `true` if we successfully paused playback, `false` if nothing was playing
     ///   or if we couldn't determine playback state.
+    ///
+    /// - Note: Uses a local one-shot gate to protect against `MediaRemoteAdapter`
+    ///   firing the `getTrackInfo` callback more than once, which would otherwise
+    ///   crash with `EXC_BREAKPOINT` (SIGTRAP) due to double-resume of a
+    ///   `CheckedContinuation`.
     func pauseIfPlaying() async -> Bool {
         return await withCheckedContinuation { continuation in
+            let resumeLock = NSLock()
+            var didResume = false
+
+            func resumeOnce(_ value: Bool) {
+                var shouldResume = false
+
+                resumeLock.lock()
+                if !didResume {
+                    didResume = true
+                    shouldResume = true
+                }
+                resumeLock.unlock()
+
+                guard shouldResume else {
+                    DebugLogger.shared.warning(
+                        "MediaPlaybackService: Suppressed duplicate resume (MediaRemoteAdapter callback fired more than once)",
+                        source: "MediaPlaybackService"
+                    )
+                    return
+                }
+
+                continuation.resume(returning: value)
+            }
+
             self.mediaController.getTrackInfo { [weak self] trackInfo in
                 guard let self = self else {
-                    continuation.resume(returning: false)
+                    resumeOnce(false)
                     return
                 }
 
@@ -39,7 +68,7 @@ final class MediaPlaybackService {
                         "MediaPlaybackService: No track info available, nothing to pause",
                         source: "MediaPlaybackService"
                     )
-                    continuation.resume(returning: false)
+                    resumeOnce(false)
                     return
                 }
 
@@ -73,13 +102,13 @@ final class MediaPlaybackService {
                         source: "MediaPlaybackService"
                     )
                     self.mediaController.pause()
-                    continuation.resume(returning: true)
+                    resumeOnce(true)
                 } else {
                     DebugLogger.shared.debug(
                         "MediaPlaybackService: Media is not playing, no action needed",
                         source: "MediaPlaybackService"
                     )
-                    continuation.resume(returning: false)
+                    resumeOnce(false)
                 }
             }
         }
