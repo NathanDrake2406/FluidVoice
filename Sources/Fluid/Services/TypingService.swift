@@ -31,6 +31,12 @@ final class TypingService {
         let items: [PasteboardItemSnapshot]
     }
 
+    private struct FocusedTextSnapshot {
+        let pid: pid_t
+        let value: String?
+        let selectedRange: CFRange?
+    }
+
     private static let focusSnapshotQueue = DispatchQueue(label: "TypingService.FocusSnapshot")
     private static var focusSnapshot: FocusSnapshot?
 
@@ -291,21 +297,27 @@ final class TypingService {
 
     private func tryReliablePasteInsertion(_ text: String, preferredTargetPID: pid_t?) -> Bool {
         self.log("[TypingService] Trying global clipboard insertion")
-        if self.insertTextViaClipboard(text) {
-            self.log("[TypingService] SUCCESS: Global clipboard insertion completed")
+        if self.performVerifiedPasteAttempt(
+            methodName: "Global clipboard",
+            action: { self.insertTextViaClipboard(text) }
+        ) {
             return true
         }
 
         self.log("[TypingService] Global clipboard insertion failed, trying menu paste")
-        if self.insertTextViaMenuPaste(text) {
-            self.log("[TypingService] SUCCESS: Menu paste insertion completed")
+        if self.performVerifiedPasteAttempt(
+            methodName: "Menu paste",
+            action: { self.insertTextViaMenuPaste(text) }
+        ) {
             return true
         }
 
         if let preferredTargetPID, preferredTargetPID > 0 {
             self.log("[TypingService] Menu paste failed, trying clipboard-to-PID fallback")
-            if self.insertTextViaClipboardToPid(text, targetPID: preferredTargetPID) {
-                self.log("[TypingService] SUCCESS: Clipboard-to-PID insertion completed")
+            if self.performVerifiedPasteAttempt(
+                methodName: "Clipboard-to-PID",
+                action: { self.insertTextViaClipboardToPid(text, targetPID: preferredTargetPID) }
+            ) {
                 return true
             }
         }
@@ -794,6 +806,62 @@ final class TypingService {
         var range = CFRange()
         let ok = AXValueGetValue(unsafeBitCast(axValue, to: AXValue.self), .cfRange, &range)
         return ok ? range : nil
+    }
+
+    private func captureFocusedTextSnapshot() -> FocusedTextSnapshot? {
+        guard let focusInfo = self.getSystemFocusedElementAndPID() else { return nil }
+        return FocusedTextSnapshot(
+            pid: focusInfo.pid,
+            value: self.getElementStringValue(focusInfo.element),
+            selectedRange: self.getSelectedTextRange(focusInfo.element)
+        )
+    }
+
+    private func focusedTextChanged(from snapshot: FocusedTextSnapshot) -> Bool {
+        for _ in 0..<4 {
+            usleep(40_000)
+
+            guard let current = self.captureFocusedTextSnapshot(),
+                  current.pid == snapshot.pid
+            else {
+                continue
+            }
+
+            if current.value != snapshot.value {
+                return true
+            }
+
+            if let before = snapshot.selectedRange,
+               let after = current.selectedRange,
+               before.location != after.location || before.length != after.length
+            {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func performVerifiedPasteAttempt(methodName: String, action: () -> Bool) -> Bool {
+        let snapshot = self.captureFocusedTextSnapshot()
+
+        guard action() else {
+            self.log("[TypingService] \(methodName) paste dispatch failed")
+            return false
+        }
+
+        guard let snapshot else {
+            self.log("[TypingService] \(methodName) paste dispatched but could not be verified; continuing fallbacks")
+            return false
+        }
+
+        if self.focusedTextChanged(from: snapshot) {
+            self.log("[TypingService] SUCCESS: \(methodName) insertion verified")
+            return true
+        }
+
+        self.log("[TypingService] \(methodName) paste dispatched but no text change was observed; continuing fallbacks")
+        return false
     }
 
     private func insertTextAtCursorUsingSelectedRange(_ element: AXUIElement, _ text: String) -> Bool {
