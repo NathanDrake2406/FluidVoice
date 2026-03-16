@@ -2636,9 +2636,9 @@ extension SettingsStore {
         var description: String {
             switch self {
             case .standard:
-                return "Tries to avoid clipboard changes by typing directly when possible. May fail or behave inconsistently in some apps."
+                return "Tries to avoid clipboard changes by typing directly when possible. Usually a bit slower, and may fail or behave inconsistently in some apps."
             case .reliablePaste:
-                return "Works best across browsers and desktop apps. Uses a temporary clipboard paste, so clipboard history apps may briefly record dictated text."
+                return "Usually faster and works best across browsers and desktop apps. Uses a temporary clipboard paste, so clipboard history apps may briefly record dictated text."
             }
         }
     }

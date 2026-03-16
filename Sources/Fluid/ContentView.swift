@@ -2175,7 +2175,7 @@ struct ContentView: View {
         )
         if activated {
             // Small delay to allow focus to settle before typing events fire.
-            let settleNanos: UInt64 = focusedElementRestored ? 40_000_000 : 90_000_000
+            let settleNanos: UInt64 = 10_000_000
             try? await Task.sleep(nanoseconds: settleNanos)
         }
     }
