@@ -17,37 +17,13 @@ final class TypingService {
 
     private var isCurrentlyTyping = false
 
-    private struct FocusSnapshot {
-        let pid: pid_t
-        let window: AXUIElement?
-        let element: AXUIElement?
-    }
-
-    private struct PasteboardItemSnapshot {
-        let dataByType: [NSPasteboard.PasteboardType: Data]
-    }
-
-    private struct PasteboardSnapshot {
-        let items: [PasteboardItemSnapshot]
-    }
-
-    private static let focusSnapshotQueue = DispatchQueue(label: "TypingService.FocusSnapshot")
-    private static var focusSnapshot: FocusSnapshot?
-
-    private var textInsertionMode: SettingsStore.TextInsertionMode {
-        SettingsStore.shared.textInsertionMode
-    }
-
     // MARK: - Focus helpers (shared)
 
     /// Best-effort: returns the PID owning the currently focused accessibility element.
     /// This is more reliable than NSWorkspace.frontmostApplication for floating overlays/launchers.
     static func captureSystemFocusedPID() -> pid_t? {
         // Accessibility is required to query system-focused AX element.
-        guard AXIsProcessTrusted() else {
-            self.storeFocusSnapshot(nil)
-            return nil
-        }
+        guard AXIsProcessTrusted() else { return nil }
 
         let systemWideElement = AXUIElementCreateSystemWide()
         var focusedElementRef: CFTypeRef?
@@ -57,64 +33,14 @@ final class TypingService {
             kAXFocusedUIElementAttribute as CFString,
             &focusedElementRef
         )
-        guard result == .success, let focusedElementRef else {
-            Self.storeFocusSnapshot(nil)
-            return nil
-        }
-        guard CFGetTypeID(focusedElementRef) == AXUIElementGetTypeID() else {
-            Self.storeFocusSnapshot(nil)
-            return nil
-        }
+        guard result == .success, let focusedElementRef else { return nil }
+        guard CFGetTypeID(focusedElementRef) == AXUIElementGetTypeID() else { return nil }
 
         let element = unsafeBitCast(focusedElementRef, to: AXUIElement.self)
         var pid: pid_t = 0
         AXUIElementGetPid(element, &pid)
-        guard pid > 0 else {
-            Self.storeFocusSnapshot(nil)
-            return nil
-        }
-        let appElement = AXUIElementCreateApplication(pid)
-        let window = Self.copyAXElementAttribute(from: appElement, attribute: kAXFocusedWindowAttribute as CFString)
-            ?? Self.copyAXElementAttribute(from: appElement, attribute: kAXMainWindowAttribute as CFString)
-        Self.storeFocusSnapshot(FocusSnapshot(pid: pid, window: window, element: element))
-        Self.logFocusState("[TypingService] Captured focus snapshot")
+        guard pid > 0 else { return nil }
         return pid
-    }
-
-    @discardableResult
-    static func restoreCapturedFocus(in pid: pid_t) -> Bool {
-        guard AXIsProcessTrusted() else { return false }
-        guard let snapshot = loadFocusSnapshot(),
-              snapshot.pid == pid else { return false }
-
-        Self.logFocusState("[TypingService] Before restoreCapturedFocus")
-        let appElement = AXUIElementCreateApplication(pid)
-
-        if let window = snapshot.window {
-            _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-            _ = AXUIElementSetAttributeValue(appElement, kAXMainWindowAttribute as CFString, window)
-            _ = AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, window)
-            usleep(40_000)
-        }
-
-        guard let element = snapshot.element else { return false }
-
-        for _ in 0..<3 {
-            let result = AXUIElementSetAttributeValue(
-                element,
-                kAXFocusedAttribute as CFString,
-                kCFBooleanTrue
-            )
-            if result == .success, Self.isCurrentlyFocusedElement(element, expectedPID: pid) {
-                Self.logFocusState("[TypingService] After restoreCapturedFocus success")
-                return true
-            }
-            usleep(50_000)
-        }
-
-        let isFocused = Self.isCurrentlyFocusedElement(element, expectedPID: pid)
-        Self.logFocusState("[TypingService] After restoreCapturedFocus final result=\(isFocused)")
-        return isFocused
     }
 
     /// Best-effort: activates the app with the given PID, unless it's Fluid itself.
@@ -187,22 +113,6 @@ final class TypingService {
         self.log("[TypingService] insertTextInstantly called with \(text.count) characters")
         self.log("[TypingService] Attempting to type text: \"\(text.prefix(50))\(text.count > 50 ? "..." : "")\"")
 
-        if self.textInsertionMode == .reliablePaste {
-            self.log("[TypingService] Reliable Paste mode enabled")
-            if self.tryReliablePasteInsertion(text, preferredTargetPID: preferredTargetPID) {
-                self.log("[TypingService] SUCCESS: Reliable Paste mode completed")
-                return
-            }
-            self.log("[TypingService] Reliable Paste mode fell through to direct-typing fallbacks")
-        } else if let preferredTargetPID, preferredTargetPID > 0 {
-            self.log("[TypingService] Experimental Direct Typing mode: trying preferred PID unicode insertion first")
-            if self.insertTextBulkInstant(text, targetPID: preferredTargetPID) {
-                self.log("[TypingService] SUCCESS: Preferred PID CGEvent insertion completed")
-                return
-            }
-            self.log("[TypingService] Preferred PID CGEvent insertion failed, continuing fallback pipeline")
-        }
-
         if text.utf16.count > Self.cgEventUnicodeLimit {
             self.log("[TypingService] Text exceeds CGEvent limit (\(text.utf16.count) UTF-16 units), using clipboard insertion")
             if self.insertTextViaClipboard(text) {
@@ -221,6 +131,17 @@ final class TypingService {
             return
         }
 
+        // Short text: use the normal cascade (CGEvent bulk is safe for <= cgEventUnicodeLimit)
+
+        // Preferred: target a specific PID when provided (e.g., the app that was focused when recording started).
+        if let preferredTargetPID, preferredTargetPID > 0 {
+            self.log("[TypingService] Trying CGEvent insertion targeting preferred PID \(preferredTargetPID)")
+            if self.insertTextBulkInstant(text, targetPID: preferredTargetPID) {
+                self.log("[TypingService] SUCCESS: CGEvent preferred-PID insertion completed")
+                return
+            }
+        }
+
         // Get frontmost app info
         if let frontApp = NSWorkspace.shared.frontmostApplication {
             self.log("[TypingService] Target app: \(frontApp.localizedName ?? "Unknown") (\(frontApp.bundleIdentifier ?? "Unknown"))")
@@ -235,7 +156,6 @@ final class TypingService {
         } else {
             self.log("[TypingService] WARNING: Could not determine focused AX element PID")
         }
-        Self.logFocusState("[TypingService] Before insertion pipeline")
 
         if let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier {
             self.log("[TypingService] Frontmost PID: \(frontPID)")
@@ -289,204 +209,7 @@ final class TypingService {
         self.log("[TypingService] Character-by-character typing completed")
     }
 
-    private func tryReliablePasteInsertion(_ text: String, preferredTargetPID: pid_t?) -> Bool {
-        self.log("[TypingService] Trying global clipboard insertion")
-        if self.insertTextViaClipboard(text) {
-            self.log("[TypingService] SUCCESS: Global clipboard insertion completed")
-            return true
-        }
-
-        self.log("[TypingService] Global clipboard insertion failed, trying menu paste")
-        if self.insertTextViaMenuPaste(text) {
-            self.log("[TypingService] SUCCESS: Menu paste insertion completed")
-            return true
-        }
-
-        if let preferredTargetPID, preferredTargetPID > 0 {
-            self.log("[TypingService] Menu paste failed, trying clipboard-to-PID fallback")
-            if self.insertTextViaClipboardToPid(text, targetPID: preferredTargetPID) {
-                self.log("[TypingService] SUCCESS: Clipboard-to-PID insertion completed")
-                return true
-            }
-        }
-
-        return false
-    }
-
     private static let cgEventUnicodeLimit = 200
-
-    private static func storeFocusSnapshot(_ snapshot: FocusSnapshot?) {
-        self.focusSnapshotQueue.sync {
-            Self.focusSnapshot = snapshot
-        }
-    }
-
-    private static func loadFocusSnapshot() -> FocusSnapshot? {
-        self.focusSnapshotQueue.sync { Self.focusSnapshot }
-    }
-
-    private static func copyAXElementAttribute(from element: AXUIElement, attribute: CFString) -> AXUIElement? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
-        guard result == .success, let value else { return nil }
-        guard CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return unsafeBitCast(value, to: AXUIElement.self)
-    }
-
-    private static func stringAXAttribute(from element: AXUIElement, attribute: CFString) -> String? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
-        guard result == .success else { return nil }
-        return value as? String
-    }
-
-    private static func currentFocusDebugDescription() -> String {
-        let systemWideElement = AXUIElementCreateSystemWide()
-        var focusedElementRef: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(
-            systemWideElement,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedElementRef
-        )
-        guard result == .success, let focusedElementRef else {
-            return "focusedElement=unavailable result=\(result.rawValue)"
-        }
-        guard CFGetTypeID(focusedElementRef) == AXUIElementGetTypeID() else {
-            return "focusedElement=unexpectedType"
-        }
-
-        let element = unsafeBitCast(focusedElementRef, to: AXUIElement.self)
-        var pid: pid_t = 0
-        AXUIElementGetPid(element, &pid)
-        let role = Self.stringAXAttribute(from: element, attribute: kAXRoleAttribute as CFString) ?? "unknown"
-        let subrole = Self.stringAXAttribute(from: element, attribute: kAXSubroleAttribute as CFString) ?? "none"
-        let title = Self.stringAXAttribute(from: element, attribute: kAXTitleAttribute as CFString) ?? "none"
-        let description = Self.stringAXAttribute(from: element, attribute: kAXDescriptionAttribute as CFString) ?? "none"
-        return "focusedPID=\(pid) role=\(role) subrole=\(subrole) title=\(title) description=\(description)"
-    }
-
-    private static func logFocusState(_ prefix: String) {
-        guard self.isLoggingEnabled else { return }
-        DebugLogger.shared.debug("\(prefix) | \(self.currentFocusDebugDescription())", source: "TypingService")
-    }
-
-    private static func isCurrentlyFocusedElement(_ expectedElement: AXUIElement, expectedPID: pid_t) -> Bool {
-        let systemWideElement = AXUIElementCreateSystemWide()
-        var focusedElementRef: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(
-            systemWideElement,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedElementRef
-        )
-        guard result == .success, let focusedElementRef else { return false }
-        guard CFGetTypeID(focusedElementRef) == AXUIElementGetTypeID() else { return false }
-
-        let currentElement = unsafeBitCast(focusedElementRef, to: AXUIElement.self)
-        if CFEqual(currentElement, expectedElement) { return true }
-
-        var currentPID: pid_t = 0
-        AXUIElementGetPid(currentElement, &currentPID)
-        guard currentPID == expectedPID else { return false }
-
-        var currentRoleRef: CFTypeRef?
-        let roleResult = AXUIElementCopyAttributeValue(
-            currentElement,
-            kAXRoleAttribute as CFString,
-            &currentRoleRef
-        )
-        guard roleResult == .success, let currentRole = currentRoleRef as? String else { return false }
-        return ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox", "AXWebArea", "AXGroup"].contains(currentRole)
-    }
-
-    private func capturePasteboardSnapshot(_ pasteboard: NSPasteboard) -> PasteboardSnapshot {
-        let items: [PasteboardItemSnapshot] = pasteboard.pasteboardItems?.map { item in
-            var dataByType: [NSPasteboard.PasteboardType: Data] = [:]
-            for type in item.types {
-                if let data = item.data(forType: type) {
-                    dataByType[type] = data
-                }
-            }
-            return PasteboardItemSnapshot(dataByType: dataByType)
-        } ?? []
-        return PasteboardSnapshot(items: items)
-    }
-
-    private func restorePasteboardSnapshot(_ snapshot: PasteboardSnapshot, to pasteboard: NSPasteboard) {
-        pasteboard.clearContents()
-        guard !snapshot.items.isEmpty else { return }
-
-        let restoredItems = snapshot.items.map { snap -> NSPasteboardItem in
-            let item = NSPasteboardItem()
-            for (type, data) in snap.dataByType {
-                item.setData(data, forType: type)
-            }
-            return item
-        }
-        _ = pasteboard.writeObjects(restoredItems)
-    }
-
-    private func withTemporaryPasteboardString(
-        _ text: String,
-        restoreDelayMicros: useconds_t,
-        action: () -> Bool
-    ) -> Bool {
-        let pasteboard = NSPasteboard.general
-        let snapshot = self.capturePasteboardSnapshot(pasteboard)
-
-        pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string) else {
-            self.log("[TypingService] ERROR: Failed to set temporary clipboard string")
-            self.restorePasteboardSnapshot(snapshot, to: pasteboard)
-            return false
-        }
-
-        let actionResult = action()
-        usleep(restoreDelayMicros)
-
-        // Avoid clobbering user clipboard changes that happened after our insertion.
-        if pasteboard.string(forType: .string) == text {
-            self.restorePasteboardSnapshot(snapshot, to: pasteboard)
-            self.log("[TypingService] Restored previous clipboard snapshot")
-        } else {
-            self.log("[TypingService] Skipped clipboard restore because clipboard changed externally")
-        }
-
-        return actionResult
-    }
-
-    /// Clipboard-paste insertion targeted at a specific PID.
-    /// Uses postToPid for Cmd+V while preserving the full previous pasteboard payload.
-    private func insertTextViaClipboardToPid(_ text: String, targetPID: pid_t) -> Bool {
-        self.log("[TypingService] Starting clipboard-to-PID insertion to PID \(targetPID)")
-
-        guard targetPID > 0 else {
-            self.log("[TypingService] ERROR: Invalid target PID \(targetPID)")
-            return false
-        }
-
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier != targetPID {
-            _ = Self.activateApp(pid: targetPID)
-            usleep(80_000)
-        }
-
-        return self.withTemporaryPasteboardString(text, restoreDelayMicros: 180_000) {
-            guard let cmdVDown = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true),
-                  let cmdVUp = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false)
-            else {
-                self.log("[TypingService] ERROR: Failed to create Cmd+V events for PID insertion")
-                return false
-            }
-
-            cmdVDown.flags = .maskCommand
-            cmdVUp.flags = .maskCommand
-
-            cmdVDown.postToPid(targetPID)
-            usleep(10_000)
-            cmdVUp.postToPid(targetPID)
-            self.log("[TypingService] Cmd+V posted to PID \(targetPID)")
-            return true
-        }
-    }
 
     private func insertTextBulkInstant(_ text: String, targetPID: pid_t) -> Bool {
         self.log("[TypingService] Starting INSTANT bulk CGEvent insertion (NO CLIPBOARD) to PID \(targetPID)")
@@ -554,57 +277,46 @@ final class TypingService {
     /// More reliable but slightly slower - copies text to clipboard then pastes
     private func insertTextViaClipboard(_ text: String) -> Bool {
         self.log("[TypingService] Starting clipboard-based insertion")
-        return self.withTemporaryPasteboardString(text, restoreDelayMicros: 120_000) {
-            guard let cmdVDown = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true), // 9 = 'V'
-                  let cmdVUp = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false)
-            else {
-                self.log("[TypingService] ERROR: Failed to create Cmd+V events")
-                return false
+
+        // Save current clipboard content
+        let pasteboard = NSPasteboard.general
+        let previousContent = pasteboard.string(forType: .string)
+
+        // Copy our text to clipboard
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        // Simulate Cmd+V
+        guard let cmdVDown = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true), // 9 = 'V'
+              let cmdVUp = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false)
+        else {
+            self.log("[TypingService] ERROR: Failed to create Cmd+V events")
+            // Restore clipboard
+            if let prev = previousContent {
+                pasteboard.clearContents()
+                pasteboard.setString(prev, forType: .string)
             }
-
-            cmdVDown.flags = .maskCommand
-            cmdVUp.flags = .maskCommand
-
-            cmdVDown.post(tap: .cghidEventTap)
-            usleep(10_000)
-            cmdVUp.post(tap: .cghidEventTap)
-            self.log("[TypingService] Cmd+V sent via clipboard insertion")
-            return true
-        }
-    }
-
-    private func insertTextViaMenuPaste(_ text: String) -> Bool {
-        self.log("[TypingService] Starting menu-based paste insertion")
-        guard let appName = NSWorkspace.shared.frontmostApplication?.localizedName, !appName.isEmpty else {
-            self.log("[TypingService] ERROR: No frontmost app name available for menu paste")
             return false
         }
 
-        return self.withTemporaryPasteboardString(text, restoreDelayMicros: 180_000) {
-            let escapedAppName = appName.replacingOccurrences(of: "\"", with: "\\\"")
-            let script = """
-            tell application "System Events"
-                tell process "\(escapedAppName)"
-                    click menu item "Paste" of menu "Edit" of menu bar 1
-                end tell
-            end tell
-            """
+        cmdVDown.flags = .maskCommand
+        cmdVUp.flags = .maskCommand
 
-            guard let appleScript = NSAppleScript(source: script) else {
-                self.log("[TypingService] ERROR: Failed to create AppleScript for menu paste")
-                return false
-            }
+        cmdVDown.post(tap: .cghidEventTap)
+        usleep(10_000) // 10ms delay
+        cmdVUp.post(tap: .cghidEventTap)
 
-            var errorInfo: NSDictionary?
-            let result = appleScript.executeAndReturnError(&errorInfo)
-            if let errorInfo {
-                self.log("[TypingService] ERROR: Menu paste AppleScript failed: \(errorInfo)")
-                return false
-            }
+        self.log("[TypingService] Cmd+V sent via clipboard insertion")
 
-            self.log("[TypingService] Menu paste executed for app \(appName), result: \(result.stringValue ?? "ok")")
-            return true
+        // Brief delay then restore clipboard
+        usleep(100_000) // 100ms delay for paste to complete
+        if let prev = previousContent {
+            pasteboard.clearContents()
+            pasteboard.setString(prev, forType: .string)
+            self.log("[TypingService] Restored previous clipboard content")
         }
+
+        return true
     }
 
     private func insertTextViaAccessibility(_ text: String) -> Bool {

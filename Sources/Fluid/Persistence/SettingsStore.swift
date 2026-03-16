@@ -2531,7 +2531,6 @@ private extension SettingsStore {
         static let enableStreamingPreview = "EnableStreamingPreview"
         static let enableAIStreaming = "EnableAIStreaming"
         static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
-        static let textInsertionMode = "TextInsertionMode"
         static let autoUpdateCheckEnabled = "AutoUpdateCheckEnabled"
         static let lastUpdateCheckDate = "LastUpdateCheckDate"
         static let updatePromptSnoozedUntil = "UpdatePromptSnoozedUntil"
@@ -2618,46 +2617,6 @@ private extension SettingsStore {
 }
 
 extension SettingsStore {
-    enum TextInsertionMode: String, CaseIterable, Identifiable, Codable {
-        case standard
-        case reliablePaste
-
-        var id: String { self.rawValue }
-
-        var displayName: String {
-            switch self {
-            case .standard:
-                return "Experimental Direct Typing"
-            case .reliablePaste:
-                return "Reliable Paste"
-            }
-        }
-
-        var description: String {
-            switch self {
-            case .standard:
-                return "Tries to avoid clipboard changes by typing directly when possible. May fail or behave inconsistently in some apps."
-            case .reliablePaste:
-                return "Works best across browsers and desktop apps. Uses a temporary clipboard paste, so clipboard history apps may briefly record dictated text."
-            }
-        }
-    }
-
-    var textInsertionMode: TextInsertionMode {
-        get {
-            guard let raw = self.defaults.string(forKey: Keys.textInsertionMode),
-                  let mode = TextInsertionMode(rawValue: raw)
-            else {
-                return .reliablePaste
-            }
-            return mode
-        }
-        set {
-            objectWillChange.send()
-            self.defaults.set(newValue.rawValue, forKey: Keys.textInsertionMode)
-        }
-    }
-
     /// Available Whisper model sizes
     enum WhisperModelSize: String, CaseIterable, Identifiable {
         case tiny = "ggml-tiny.bin"
