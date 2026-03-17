@@ -22,6 +22,29 @@ private enum OverlayShortcutResolver {
     }
 }
 
+private enum BottomOverlayStyle {
+    static let panelTop = Color(red: 0.11, green: 0.11, blue: 0.13)
+    static let panelBottom = Color(red: 0.07, green: 0.07, blue: 0.09)
+    static let panelStroke = Color.white.opacity(0.14)
+    static let panelStrokeMuted = Color.white.opacity(0.06)
+
+    static let chipTop = Color(red: 0.12, green: 0.12, blue: 0.15)
+    static let chipBottom = Color(red: 0.08, green: 0.08, blue: 0.10)
+    static let chipHoverTop = Color(red: 0.17, green: 0.17, blue: 0.21)
+    static let chipHoverBottom = Color(red: 0.12, green: 0.12, blue: 0.15)
+    static let chipDisabledTop = Color(red: 0.09, green: 0.09, blue: 0.11)
+    static let chipDisabledBottom = Color(red: 0.07, green: 0.07, blue: 0.08)
+
+    static let rowSelectedFill = Color.white.opacity(0.12)
+    static let rowSelectedStroke = Color.white.opacity(0.26)
+    static let rowHoverFill = Color.white.opacity(0.07)
+    static let rowHoverStroke = Color.white.opacity(0.17)
+
+    static let textPrimary = Color.white.opacity(0.9)
+    static let textSecondary = Color.white.opacity(0.68)
+    static let textMuted = Color.white.opacity(0.48)
+}
+
 // MARK: - Bottom Overlay Window Controller
 
 @MainActor
@@ -1107,26 +1130,26 @@ private struct BottomOverlayModeMenuView: View {
         let isHovered = self.hoveredRowID == rowID
         let fillColor: Color
         if isSelected {
-            fillColor = Color.white.opacity(0.28)
+            fillColor = BottomOverlayStyle.rowSelectedFill
         } else if isHovered {
-            fillColor = Color.white.opacity(0.20)
+            fillColor = BottomOverlayStyle.rowHoverFill
         } else {
             fillColor = Color.clear
         }
 
         let strokeColor: Color
         if isSelected {
-            strokeColor = Color.white.opacity(0.38)
+            strokeColor = BottomOverlayStyle.rowSelectedStroke
         } else if isHovered {
-            strokeColor = Color.white.opacity(0.24)
+            strokeColor = BottomOverlayStyle.rowHoverStroke
         } else {
             strokeColor = Color.clear
         }
 
-        return RoundedRectangle(cornerRadius: 7)
+        return RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(fillColor)
             .overlay(
-                RoundedRectangle(cornerRadius: 7)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(strokeColor, lineWidth: 1)
             )
     }
@@ -1143,24 +1166,26 @@ private struct BottomOverlayModeMenuView: View {
         }) {
             HStack(alignment: .center, spacing: 8) {
                 Text(title)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(BottomOverlayStyle.textPrimary)
                 Spacer()
                 if !shortcut.isEmpty {
                     Text(shortcut)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.7))
-                        .padding(.horizontal, 6)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(BottomOverlayStyle.textSecondary)
+                        .padding(.horizontal, 7)
                         .padding(.vertical, 2)
-                        .background(Color.white.opacity(0.08))
+                        .background(BottomOverlayStyle.rowHoverFill)
                         .clipShape(Capsule())
                 }
                 if isSelected {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(BottomOverlayStyle.textPrimary)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
             .background(self.rowBackground(isSelected: isSelected, rowID: rowID))
         }
         .buttonStyle(.plain)
@@ -1175,17 +1200,27 @@ private struct BottomOverlayModeMenuView: View {
             self.modeRow("Edit", mode: .edit, rowID: "edit")
 
             Divider()
+                .overlay(BottomOverlayStyle.panelStrokeMuted)
                 .padding(.vertical, 4)
 
             self.modeRow("Command", mode: .command, rowID: "command")
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.black)
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [BottomOverlayStyle.panelTop, BottomOverlayStyle.panelBottom],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(BottomOverlayStyle.panelStroke, lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.38), radius: 14, x: 0, y: 6)
         )
         .frame(maxWidth: self.maxWidth)
         .onHover { hovering in
@@ -1207,26 +1242,26 @@ private struct BottomOverlayPromptMenuView: View {
         let isHovered = self.hoveredRowID == rowID
         let fillColor: Color
         if isSelected {
-            fillColor = Color.white.opacity(0.28)
+            fillColor = BottomOverlayStyle.rowSelectedFill
         } else if isHovered {
-            fillColor = Color.white.opacity(0.20)
+            fillColor = BottomOverlayStyle.rowHoverFill
         } else {
             fillColor = Color.clear
         }
 
         let strokeColor: Color
         if isSelected {
-            strokeColor = Color.white.opacity(0.38)
+            strokeColor = BottomOverlayStyle.rowSelectedStroke
         } else if isHovered {
-            strokeColor = Color.white.opacity(0.24)
+            strokeColor = BottomOverlayStyle.rowHoverStroke
         } else {
             strokeColor = Color.clear
         }
 
-        return RoundedRectangle(cornerRadius: 7)
+        return RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(fillColor)
             .overlay(
-                RoundedRectangle(cornerRadius: 7)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(strokeColor, lineWidth: 1)
             )
     }
@@ -1241,14 +1276,17 @@ private struct BottomOverlayPromptMenuView: View {
         }) {
             HStack {
                 Text("Default")
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(BottomOverlayStyle.textPrimary)
                 Spacer()
                 if isSelected {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(BottomOverlayStyle.textPrimary)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
             .background(self.rowBackground(isSelected: isSelected, rowID: "default"))
         }
         .buttonStyle(.plain)
@@ -1267,14 +1305,17 @@ private struct BottomOverlayPromptMenuView: View {
         }) {
             HStack {
                 Text(profile.name.isEmpty ? "Untitled" : profile.name)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(BottomOverlayStyle.textPrimary)
                 Spacer()
                 if isSelected {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(BottomOverlayStyle.textPrimary)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
             .background(self.rowBackground(isSelected: isSelected, rowID: profile.id))
         }
         .buttonStyle(.plain)
@@ -1292,6 +1333,7 @@ private struct BottomOverlayPromptMenuView: View {
 
             if !profiles.isEmpty {
                 Divider()
+                    .overlay(BottomOverlayStyle.panelStrokeMuted)
                     .padding(.vertical, 4)
 
                 ForEach(profiles) { profile in
@@ -1300,12 +1342,21 @@ private struct BottomOverlayPromptMenuView: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.black)
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [BottomOverlayStyle.panelTop, BottomOverlayStyle.panelBottom],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(BottomOverlayStyle.panelStroke, lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.38), radius: 14, x: 0, y: 6)
         )
         .frame(maxWidth: self.maxWidth)
         .onHover { hovering in
@@ -1358,26 +1409,26 @@ private struct BottomOverlayActionsMenuView: View {
         let isHovered = self.hoveredRowID == rowID
         let fillColor: Color
         if isSelected {
-            fillColor = Color.white.opacity(0.28)
+            fillColor = BottomOverlayStyle.rowSelectedFill
         } else if isHovered {
-            fillColor = Color.white.opacity(0.20)
+            fillColor = BottomOverlayStyle.rowHoverFill
         } else {
             fillColor = Color.clear
         }
 
         let strokeColor: Color
         if isSelected {
-            strokeColor = Color.white.opacity(0.38)
+            strokeColor = BottomOverlayStyle.rowSelectedStroke
         } else if isHovered {
-            strokeColor = Color.white.opacity(0.24)
+            strokeColor = BottomOverlayStyle.rowHoverStroke
         } else {
             strokeColor = Color.clear
         }
 
-        return RoundedRectangle(cornerRadius: 7)
+        return RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(fillColor)
             .overlay(
-                RoundedRectangle(cornerRadius: 7)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(strokeColor, lineWidth: 1)
             )
     }
@@ -1397,13 +1448,15 @@ private struct BottomOverlayActionsMenuView: View {
         }) {
             HStack(spacing: 8) {
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(BottomOverlayStyle.textPrimary)
                 Spacer()
                 Image(systemName: icon)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(BottomOverlayStyle.textSecondary)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
             .background(self.rowBackground(isSelected: false, rowID: rowID))
         }
         .buttonStyle(.plain)
@@ -1439,6 +1492,7 @@ private struct BottomOverlayActionsMenuView: View {
             }
 
             Divider()
+                .overlay(BottomOverlayStyle.panelStrokeMuted)
                 .padding(.vertical, 4)
 
             self.actionRow(
@@ -1451,12 +1505,21 @@ private struct BottomOverlayActionsMenuView: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.black)
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [BottomOverlayStyle.panelTop, BottomOverlayStyle.panelBottom],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(BottomOverlayStyle.panelStroke, lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.38), radius: 14, x: 0, y: 6)
         )
         .frame(maxWidth: self.maxWidth)
         .onHover { hovering in
@@ -1759,11 +1822,11 @@ struct BottomOverlayView: View {
     }
 
     private var promptSelectorFontSize: CGFloat {
-        max(self.layout.modeFontSize - 1, 9)
+        max(self.layout.modeFontSize, 11)
     }
 
     private var promptSelectorVerticalPadding: CGFloat {
-        4
+        5
     }
 
     private var promptMenuGap: CGFloat {
@@ -1771,7 +1834,7 @@ struct BottomOverlayView: View {
     }
 
     private var promptSelectorCornerRadius: CGFloat {
-        max(self.layout.cornerRadius * 0.42, 8)
+        max(self.layout.cornerRadius * 0.4, 9)
     }
 
     private var promptSelectorMaxWidth: CGFloat {
@@ -1810,23 +1873,28 @@ struct BottomOverlayView: View {
     }
 
     private func chipBackground(isHovered: Bool, disabled: Bool) -> some View {
-        let fillColor: Color
+        let gradientColors: [Color]
         if disabled {
-            fillColor = Color.black.opacity(0.95)
+            gradientColors = [BottomOverlayStyle.chipDisabledTop, BottomOverlayStyle.chipDisabledBottom]
         } else if isHovered {
-            fillColor = Color(red: 0.13, green: 0.13, blue: 0.16)
+            gradientColors = [BottomOverlayStyle.chipHoverTop, BottomOverlayStyle.chipHoverBottom]
         } else {
-            fillColor = Color.black
+            gradientColors = [BottomOverlayStyle.chipTop, BottomOverlayStyle.chipBottom]
         }
 
-        let topStrokeOpacity: Double = disabled ? 0.10 : (isHovered ? 0.36 : 0.14)
-        let bottomStrokeOpacity: Double = disabled ? 0.06 : (isHovered ? 0.22 : 0.08)
-        let hoverShadowColor: Color = (isHovered && !disabled) ? Color.white.opacity(0.16) : .clear
+        let topStrokeOpacity: Double = disabled ? 0.09 : (isHovered ? 0.28 : 0.16)
+        let bottomStrokeOpacity: Double = disabled ? 0.05 : (isHovered ? 0.18 : 0.10)
 
-        return RoundedRectangle(cornerRadius: self.promptSelectorCornerRadius)
-            .fill(fillColor)
+        return RoundedRectangle(cornerRadius: self.promptSelectorCornerRadius, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: gradientColors,
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
             .overlay(
-                RoundedRectangle(cornerRadius: self.promptSelectorCornerRadius)
+                RoundedRectangle(cornerRadius: self.promptSelectorCornerRadius, style: .continuous)
                     .strokeBorder(
                         LinearGradient(
                             colors: [
@@ -1839,7 +1907,12 @@ struct BottomOverlayView: View {
                         lineWidth: 1
                     )
             )
-            .shadow(color: hoverShadowColor, radius: 6, x: 0, y: 1)
+            .shadow(
+                color: .black.opacity(disabled ? 0.2 : (isHovered ? 0.34 : 0.26)),
+                radius: isHovered ? 10 : 6,
+                x: 0,
+                y: isHovered ? 4 : 2
+            )
     }
 
     private func closePromptMenu() {
@@ -1935,20 +2008,20 @@ struct BottomOverlayView: View {
             if !self.isCompactControls {
                 Text("Mode:")
                     .font(.system(size: self.promptSelectorFontSize, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(BottomOverlayStyle.textMuted)
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
             }
             Text(self.modeLabel)
                 .font(.system(size: self.promptSelectorFontSize, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.75))
+                .foregroundStyle(BottomOverlayStyle.textPrimary)
                 .lineLimit(1)
             Image(systemName: "chevron.up")
                 .font(.system(size: max(self.promptSelectorFontSize - 1, 8), weight: .semibold))
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(BottomOverlayStyle.textMuted)
         }
         .fixedSize(horizontal: true, vertical: false)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 10)
         .padding(.vertical, self.promptSelectorVerticalPadding)
         .background(
             self.chipBackground(isHovered: self.isHoveringModeChip, disabled: self.contentState.isProcessing)
@@ -1986,20 +2059,20 @@ struct BottomOverlayView: View {
             if !self.isCompactControls {
                 Text("Prompt:")
                     .font(.system(size: self.promptSelectorFontSize, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(BottomOverlayStyle.textMuted)
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
             }
             Text(self.selectedPromptLabel)
                 .font(.system(size: self.promptSelectorFontSize, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.75))
+                .foregroundStyle(BottomOverlayStyle.textPrimary)
                 .lineLimit(1)
             Image(systemName: "chevron.up")
                 .font(.system(size: max(self.promptSelectorFontSize - 1, 8), weight: .semibold))
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(BottomOverlayStyle.textMuted)
         }
         .fixedSize(horizontal: true, vertical: false)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 10)
         .padding(.vertical, self.promptSelectorVerticalPadding)
         .background(
             self.chipBackground(
@@ -2050,14 +2123,14 @@ struct BottomOverlayView: View {
         return HStack(spacing: 5) {
             Text("Actions")
                 .font(.system(size: self.promptSelectorFontSize, weight: .medium))
-                .foregroundStyle(.white.opacity(0.75))
+                .foregroundStyle(BottomOverlayStyle.textPrimary)
                 .lineLimit(1)
             Image(systemName: "chevron.up")
                 .font(.system(size: max(self.promptSelectorFontSize - 1, 8), weight: .semibold))
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(BottomOverlayStyle.textMuted)
         }
         .fixedSize(horizontal: true, vertical: false)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 10)
         .padding(.vertical, self.promptSelectorVerticalPadding)
         .background(
             self.chipBackground(
@@ -2074,24 +2147,24 @@ struct BottomOverlayView: View {
             if self.isCompactControls {
                 Text(isEnabled ? "AI On" : "AI Off")
                     .font(.system(size: self.promptSelectorFontSize, weight: .semibold))
-                    .foregroundStyle(isEnabled ? .white.opacity(0.82) : .white.opacity(0.7))
+                    .foregroundStyle(isEnabled ? BottomOverlayStyle.textPrimary : BottomOverlayStyle.textSecondary)
                     .lineLimit(1)
             } else {
                 Text("AI:")
                     .font(.system(size: self.promptSelectorFontSize, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(BottomOverlayStyle.textMuted)
                     .lineLimit(1)
                 Text(isEnabled ? "On" : "Off")
                     .font(.system(size: self.promptSelectorFontSize, weight: .semibold))
-                    .foregroundStyle(isEnabled ? .white.opacity(0.82) : .white.opacity(0.7))
+                    .foregroundStyle(isEnabled ? BottomOverlayStyle.textPrimary : BottomOverlayStyle.textSecondary)
                     .lineLimit(1)
                 Image(systemName: isEnabled ? "brain.fill" : "brain")
                     .font(.system(size: max(self.promptSelectorFontSize - 1, 8), weight: .semibold))
-                    .foregroundStyle(isEnabled ? .white.opacity(0.65) : .white.opacity(0.45))
+                    .foregroundStyle(isEnabled ? BottomOverlayStyle.textSecondary : BottomOverlayStyle.textMuted)
             }
         }
         .fixedSize(horizontal: true, vertical: false)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 10)
         .padding(.vertical, self.promptSelectorVerticalPadding)
         .background(
             self.chipBackground(
@@ -2152,9 +2225,9 @@ struct BottomOverlayView: View {
         return HStack(spacing: 0) {
             Image(systemName: "gearshape")
                 .font(.system(size: max(self.promptSelectorFontSize + 1, 10), weight: .semibold))
-                .foregroundStyle(.white.opacity(0.72))
+                .foregroundStyle(BottomOverlayStyle.textSecondary)
         }
-        .padding(.horizontal, 9)
+        .padding(.horizontal, 10)
         .padding(.vertical, self.promptSelectorVerticalPadding)
         .background(
             self.chipBackground(
@@ -2356,25 +2429,33 @@ struct BottomOverlayView: View {
             .padding(.vertical, self.layout.vPadding)
             .frame(maxWidth: .infinity, alignment: .center)
             .background(
-                ZStack {
-                    // Solid pitch black background
-                    RoundedRectangle(cornerRadius: self.layout.cornerRadius)
-                        .fill(Color.black)
-
-                    // Inner border
-                    RoundedRectangle(cornerRadius: self.layout.cornerRadius)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(self.overlayBorderTopOpacity),
-                                    Color.white.opacity(self.overlayBorderBottomOpacity),
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: self.overlayBorderLineWidth
+                RoundedRectangle(cornerRadius: self.layout.cornerRadius, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [BottomOverlayStyle.panelTop, BottomOverlayStyle.panelBottom],
+                            startPoint: .top,
+                            endPoint: .bottom
                         )
-                }
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: self.layout.cornerRadius, style: .continuous)
+                            .strokeBorder(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(self.overlayBorderTopOpacity),
+                                        Color.white.opacity(self.overlayBorderBottomOpacity),
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                ),
+                                lineWidth: self.overlayBorderLineWidth
+                            )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: self.layout.cornerRadius, style: .continuous)
+                            .strokeBorder(BottomOverlayStyle.panelStrokeMuted, lineWidth: 0.5)
+                    )
+                    .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 10)
             )
             .frame(maxWidth: .infinity, alignment: .top)
         }
