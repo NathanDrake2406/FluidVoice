@@ -35,7 +35,7 @@ final class BottomOverlayWindowController {
     private var localMouseDownMonitor: Any?
     private var globalMouseDownMonitor: Any?
     private var releaseTransitionActiveUntil: Date?
-    private var deferredSizeUpdateDuringReleaseTransition = false
+    private var deferredResizePending = false
 
     private init() {
         NotificationCenter.default.addObserver(forName: NSNotification.Name("OverlayOffsetChanged"), object: nil, queue: .main) { [weak self] _ in
@@ -161,8 +161,8 @@ final class BottomOverlayWindowController {
         self.releaseTransitionActiveUntil = nil
         NotchContentState.shared.setBottomOverlayReleaseTransitioning(false)
 
-        let shouldFlush = flushDeferredUpdate && self.deferredSizeUpdateDuringReleaseTransition
-        self.deferredSizeUpdateDuringReleaseTransition = false
+        let shouldFlush = flushDeferredUpdate && self.deferredResizePending
+        self.deferredResizePending = false
 
         if shouldFlush, self.window?.isVisible == true {
             self.scheduleSizeAndPositionUpdate(after: 0)
@@ -175,7 +175,7 @@ final class BottomOverlayWindowController {
 
     private func scheduleSizeAndPositionUpdate(after delay: TimeInterval = 0.08) {
         if self.isReleaseTransitionActive {
-            self.deferredSizeUpdateDuringReleaseTransition = true
+            self.deferredResizePending = true
             return
         }
 
@@ -192,7 +192,7 @@ final class BottomOverlayWindowController {
     /// Update window size based on current SwiftUI content and re-position
     private func updateSizeAndPosition() {
         if self.isReleaseTransitionActive {
-            self.deferredSizeUpdateDuringReleaseTransition = true
+            self.deferredResizePending = true
             return
         }
 
