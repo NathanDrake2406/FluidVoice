@@ -1612,6 +1612,10 @@ struct ContentView: View {
 
         self.clearActiveRecordingMode()
 
+        if NotchOverlayManager.shared.isBottomOverlayVisible {
+            BottomOverlayWindowController.shared.beginReleaseTransition()
+        }
+
         // Show "Transcribing..." state before calling stop() to keep overlay visible.
         // The asr.stop() call performs the final transcription which can take a moment
         // (especially for slower models like Whisper Medium/Large).

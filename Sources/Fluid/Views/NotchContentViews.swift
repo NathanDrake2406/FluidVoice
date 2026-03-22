@@ -124,6 +124,7 @@ class NotchContentState: ObservableObject {
     // MARK: - Bottom Overlay Audio Level
 
     @Published var bottomOverlayAudioLevel: CGFloat = 0 // Audio level for bottom overlay waveform
+    @Published var isBottomOverlayReleaseTransitioning: Bool = false
 
     /// Called when the user requests a live mode switch from the prompt picker tabs.
     var onPromptModeSwitchRequested: ((SettingsStore.PromptMode) -> Void)?
@@ -152,6 +153,11 @@ class NotchContentState: ObservableObject {
     func updateExpandedModeAudioLevel(_ level: CGFloat) {
         guard self.isRecordingInExpandedMode else { return }
         self.expandedModeAudioLevel = level
+    }
+
+    func setBottomOverlayReleaseTransitioning(_ transitioning: Bool) {
+        guard self.isBottomOverlayReleaseTransitioning != transitioning else { return }
+        self.isBottomOverlayReleaseTransitioning = transitioning
     }
 
     // MARK: - Command Output Methods

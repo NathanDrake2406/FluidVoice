@@ -94,10 +94,10 @@ final class MenuBarManager: ObservableObject {
         asrService.$partialTranscription
             .receive(on: DispatchQueue.main)
             .sink { [weak self] newText in
-                guard self != nil else { return }
+                guard let self else { return }
                 // CRITICAL FIX: Check if streaming preview is enabled before updating notch
                 // The "Show Live Preview" toggle in Preferences should control this behavior
-                if SettingsStore.shared.enableStreamingPreview {
+                if SettingsStore.shared.enableStreamingPreview, !self.isProcessingActive {
                     NotchOverlayManager.shared.updateTranscriptionText(newText)
                 }
             }
