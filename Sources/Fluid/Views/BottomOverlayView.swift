@@ -82,17 +82,31 @@ final class BottomOverlayWindowController {
             self.createWindow()
         }
 
-        // Position at bottom center of main screen
-        self.positionWindow()
+        guard let window = self.window else { return }
 
-        // Show with animation
-        self.window?.alphaValue = 0
-        self.window?.orderFrontRegardless()
+        // Animate the panel rising from below its final anchored position.
+        if let targetOrigin = self.anchoredWindowOrigin(for: window) {
+            let startOrigin = NSPoint(x: targetOrigin.x, y: targetOrigin.y - self.presentationLiftDistance(for: window))
+            window.setFrameOrigin(startOrigin)
+            window.alphaValue = 0
+            window.orderFrontRegardless()
 
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.25
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            self.window?.animator().alphaValue = 1
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.24
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                window.animator().alphaValue = 1
+                window.animator().setFrameOrigin(targetOrigin)
+            }
+        } else {
+            self.positionWindow()
+            window.alphaValue = 0
+            window.orderFrontRegardless()
+
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.24
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                window.animator().alphaValue = 1
+            }
         }
     }
 
@@ -114,13 +128,19 @@ final class BottomOverlayWindowController {
         NotchContentState.shared.targetAppIcon = nil
 
         guard let window = window else { return }
+        let hideOrigin = NSPoint(
+            x: window.frame.origin.x,
+            y: window.frame.origin.y - (self.presentationLiftDistance(for: window) * 0.6)
+        )
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.2
+            context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             window.animator().alphaValue = 0
+            window.animator().setFrameOrigin(hideOrigin)
         } completionHandler: {
             window.orderOut(nil)
+            self.positionWindow()
         }
     }
 
@@ -314,9 +334,16 @@ final class BottomOverlayWindowController {
         // Safe check for window and screen availability
         guard let window = window else { return }
 
+        guard let anchoredOrigin = self.anchoredWindowOrigin(for: window) else { return }
+
+        // Apply position directly to avoid implicit frame animations during hover-driven resizes.
+        window.setFrameOrigin(anchoredOrigin)
+    }
+
+    private func anchoredWindowOrigin(for window: NSWindow) -> NSPoint? {
         // Use the screen that contains the window, or fallback to the main screen
         let screen = window.screen ?? NSScreen.main
-        guard let screen = screen else { return }
+        guard let screen = screen else { return nil }
 
         let fullFrame = screen.frame
         let visibleFrame = screen.visibleFrame
@@ -339,8 +366,12 @@ final class BottomOverlayWindowController {
 
         y = max(min(y, maxY), minY)
 
-        // Apply position directly to avoid implicit frame animations during hover-driven resizes.
-        window.setFrameOrigin(NSPoint(x: x, y: y))
+        return NSPoint(x: x, y: y)
+    }
+
+    private func presentationLiftDistance(for window: NSWindow) -> CGFloat {
+        let height = max(window.frame.height, 1)
+        return max(14, min(height * 0.2, 28))
     }
 }
 

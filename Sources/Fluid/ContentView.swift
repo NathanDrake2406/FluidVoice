@@ -1612,27 +1612,32 @@ struct ContentView: View {
 
         self.clearActiveRecordingMode()
 
-        if NotchOverlayManager.shared.isBottomOverlayVisible {
-            BottomOverlayWindowController.shared.beginReleaseTransition()
+        let hadLivePreviewText = self.asr.partialTranscription
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
+
+        // Only show a processing transition when we already observed spoken text.
+        // If there was no spoken text, let the overlay disappear immediately on hotkey release.
+        if hadLivePreviewText {
+            if NotchOverlayManager.shared.isBottomOverlayVisible {
+                BottomOverlayWindowController.shared.beginReleaseTransition()
+            }
+
+            DebugLogger.shared.debug("Showing transcription processing state", source: "ContentView")
+            self.menuBarManager.setProcessing(true)
+            NotchOverlayManager.shared.updateTranscriptionText("Transcribing...")
+
+            // Give SwiftUI a chance to render the processing state before heavier work.
+            await Task.yield()
         }
 
-        // Show "Transcribing..." state before calling stop() to keep overlay visible.
-        // The asr.stop() call performs the final transcription which can take a moment
-        // (especially for slower models like Whisper Medium/Large).
-        DebugLogger.shared.debug("Showing transcription processing state", source: "ContentView")
-        self.menuBarManager.setProcessing(true)
-        NotchOverlayManager.shared.updateTranscriptionText("Transcribing...")
-
-        // Give SwiftUI a chance to render the processing state before we do heavier work
-        // (ASR finalization + optional AI post-processing).
-        await Task.yield()
-
         // Stop the ASR service and wait for transcription to complete
-        // The processing indicator will stay visible during this phase
         let transcribedText = await asr.stop()
 
-        // Reset the transcription text display after transcription completes
-        NotchOverlayManager.shared.updateTranscriptionText("")
+        // Reset transient status text if we showed it.
+        if hadLivePreviewText {
+            NotchOverlayManager.shared.updateTranscriptionText("")
+        }
 
         guard transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             DebugLogger.shared.debug("Transcription returned empty text", source: "ContentView")
@@ -1647,6 +1652,11 @@ struct ContentView: View {
             promptTest.lastTranscriptionText = transcribedText
             promptTest.lastOutputText = ""
             promptTest.lastError = ""
+
+            let overlayStillVisible = NotchOverlayManager.shared.isBottomOverlayVisible || NotchOverlayManager.shared.isAnyNotchVisible
+            if !hadLivePreviewText, overlayStillVisible {
+                self.menuBarManager.setProcessing(true)
+            }
 
             guard DictationAIPostProcessingGate.isConfigured() else {
                 promptTest.lastError = "AI post-processing is not configured. Enable AI Enhancement and configure a provider/model (and API key for non-local endpoints)."
@@ -1705,6 +1715,11 @@ struct ContentView: View {
 
         if shouldUseAI {
             DebugLogger.shared.debug("Routing transcription through AI post-processing", source: "ContentView")
+
+            let overlayStillVisible = NotchOverlayManager.shared.isBottomOverlayVisible || NotchOverlayManager.shared.isAnyNotchVisible
+            if !hadLivePreviewText, overlayStillVisible {
+                self.menuBarManager.setProcessing(true)
+            }
 
             // Update overlay text to show we're now refining (processing already true)
             NotchOverlayManager.shared.updateTranscriptionText("Refining...")
