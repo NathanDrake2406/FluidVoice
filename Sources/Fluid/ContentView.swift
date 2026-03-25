@@ -1749,8 +1749,7 @@ struct ContentView: View {
         var finalText: String
 
         // Check if we should use AI processing
-        let shouldUseAI = DictationAIPostProcessingGate.isConfigured() ||
-            (promptOverride != nil && DictationAIPostProcessingGate.isProviderConfigured())
+        let shouldUseAI = DictationAIPostProcessingGate.isConfigured() || (promptOverride != nil && DictationAIPostProcessingGate.isProviderConfigured())
 
         if shouldUseAI {
             DebugLogger.shared.debug("Routing transcription through AI post-processing", source: "ContentView")
@@ -2139,10 +2138,7 @@ struct ContentView: View {
     }
 
     private func setActiveRecordingMode(_ mode: ActiveRecordingMode) {
-        if mode != .promptMode {
-            self.promptModeOverrideText = nil
-            NotchContentState.shared.promptModeOverrideProfileName = nil
-        }
+        if mode != .promptMode { self.promptModeOverrideText = nil; NotchContentState.shared.promptModeOverrideProfileName = nil }
         self.activeRecordingMode = mode
         switch mode {
         case .none, .dictate, .promptMode:
@@ -2574,8 +2570,7 @@ struct ContentView: View {
                 if let promptID = settings.promptModeSelectedPromptID,
                    let profile = settings.dictationPromptProfiles.first(where: { $0.id == promptID })
                 {
-                    let body = SettingsStore.stripBasePrompt(for: .dictate, from: profile.prompt)
-                    self.promptModeOverrideText = SettingsStore.combineBasePrompt(for: .dictate, with: body)
+                    self.promptModeOverrideText = SettingsStore.combineBasePrompt(for: .dictate, with: SettingsStore.stripBasePrompt(for: .dictate, from: profile.prompt))
                     NotchContentState.shared.promptModeOverrideProfileName = profile.name
                 }
 
