@@ -406,29 +406,7 @@ final class GlobalHotkeyManager: NSObject {
             }
 
             // Check prompt mode hotkey
-            if self.promptModeShortcutEnabled, self.matchesPromptModeShortcut(keyCode: keyCode, modifiers: eventModifiers) {
-                if self.pressAndHoldMode {
-                    if !self.isPromptModeKeyPressed {
-                        self.isPromptModeKeyPressed = true
-                        DebugLogger.shared.info("Prompt mode shortcut pressed (hold mode) - starting", source: "GlobalHotkeyManager")
-                        self.triggerPromptMode()
-                    }
-                } else {
-                    if self.asrService.isRunning {
-                        if self.isPromptModeRecordingProvider?() ?? false {
-                            DebugLogger.shared.info("Prompt mode shortcut pressed in Prompt mode - stopping", source: "GlobalHotkeyManager")
-                            self.stopRecordingIfNeeded()
-                        } else {
-                            DebugLogger.shared.info("Prompt mode shortcut pressed while recording - switching mode", source: "GlobalHotkeyManager")
-                            self.triggerPromptMode()
-                        }
-                    } else {
-                        DebugLogger.shared.info("Prompt mode shortcut triggered - starting", source: "GlobalHotkeyManager")
-                        self.triggerPromptMode()
-                    }
-                }
-                return nil
-            }
+            if self.handlePromptModeKeyDown(keyCode: keyCode, modifiers: eventModifiers) { return nil }
 
             // Check command mode hotkey first
             if self.commandModeShortcutEnabled, self.matchesCommandModeShortcut(keyCode: keyCode, modifiers: eventModifiers) {
@@ -541,12 +519,7 @@ final class GlobalHotkeyManager: NSObject {
 
         case .keyUp:
             // Prompt mode key up (press and hold mode)
-            if self.promptModeShortcutEnabled, self.pressAndHoldMode, self.isPromptModeKeyPressed, keyCode == self.promptModeShortcut.keyCode {
-                self.isPromptModeKeyPressed = false
-                DebugLogger.shared.info("Prompt mode shortcut released (hold mode) - stopping", source: "GlobalHotkeyManager")
-                self.stopRecordingIfNeeded()
-                return nil
-            }
+            if self.handlePromptModeKeyUp(keyCode: keyCode) { return nil }
 
             // Command mode key up (press and hold mode)
             // Note: Only check keyCode, not modifiers - user may release modifier before/with main key
@@ -582,64 +555,7 @@ final class GlobalHotkeyManager: NSObject {
                 || flags.contains(.maskShift)
 
             // Check prompt mode shortcut (if it's a modifier-only shortcut)
-            if self.promptModeShortcutEnabled, self.promptModeShortcut.modifierFlags.isEmpty, keyCode == self.promptModeShortcut.keyCode {
-                if isModifierPressed {
-                    self.modifierOnlyKeyDown = true
-                    self.otherKeyPressedDuringModifier = false
-                    self.modifierPressStartTime = Date()
-
-                    if self.pressAndHoldMode {
-                        if !self.isPromptModeKeyPressed {
-                            self.isPromptModeKeyPressed = true
-                            self.pendingHoldModeStart?.cancel()
-                            self.pendingHoldModeType = .promptMode
-                            self.pendingHoldModeStart = Task { @MainActor [weak self] in
-                                try? await Task.sleep(nanoseconds: 150_000_000)
-                                guard let self = self, !Task.isCancelled else { return }
-                                guard self.isPromptModeKeyPressed, !self.otherKeyPressedDuringModifier else {
-                                    DebugLogger.shared.debug("Prompt mode hold start cancelled - key combo detected", source: "GlobalHotkeyManager")
-                                    return
-                                }
-                                DebugLogger.shared.info("Prompt mode modifier held (hold mode) - starting after delay", source: "GlobalHotkeyManager")
-                                self.triggerPromptMode()
-                            }
-                        }
-                    }
-                } else {
-                    let wasCleanPress = !self.otherKeyPressedDuringModifier
-                    self.modifierOnlyKeyDown = false
-                    self.otherKeyPressedDuringModifier = false
-                    self.modifierPressStartTime = nil
-
-                    if self.pressAndHoldMode {
-                        self.pendingHoldModeStart?.cancel()
-                        self.pendingHoldModeStart = nil
-                        self.pendingHoldModeType = nil
-
-                        if self.isPromptModeKeyPressed {
-                            self.isPromptModeKeyPressed = false
-                            if self.asrService.isRunning {
-                                DebugLogger.shared.info("Prompt mode modifier released (hold mode) - stopping", source: "GlobalHotkeyManager")
-                                self.stopRecordingIfNeeded()
-                            }
-                        }
-                    } else if wasCleanPress {
-                        if self.asrService.isRunning {
-                            if self.isPromptModeRecordingProvider?() ?? false {
-                                DebugLogger.shared.info("Prompt mode modifier released (toggle, same mode) - stopping", source: "GlobalHotkeyManager")
-                                self.stopRecordingIfNeeded()
-                            } else {
-                                DebugLogger.shared.info("Prompt mode modifier released (toggle, switch mode) - switching", source: "GlobalHotkeyManager")
-                                self.triggerPromptMode()
-                            }
-                        } else {
-                            DebugLogger.shared.info("Prompt mode modifier released (toggle) - starting", source: "GlobalHotkeyManager")
-                            self.triggerPromptMode()
-                        }
-                    }
-                }
-                return nil
-            }
+            if self.handlePromptModeFlagsChanged(keyCode: keyCode, isModifierPressed: isModifierPressed) { return nil }
 
             // Check command mode shortcut (if it's a modifier-only shortcut)
             if self.commandModeShortcutEnabled, self.commandModeShortcut.modifierFlags.isEmpty, keyCode == self.commandModeShortcut.keyCode {
@@ -871,6 +787,96 @@ final class GlobalHotkeyManager: NSObject {
         }
 
         return Unmanaged.passUnretained(event)
+    }
+
+    private func handlePromptModeKeyDown(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
+        guard self.promptModeShortcutEnabled, self.matchesPromptModeShortcut(keyCode: keyCode, modifiers: modifiers) else { return false }
+        if self.pressAndHoldMode {
+            if !self.isPromptModeKeyPressed {
+                self.isPromptModeKeyPressed = true
+                DebugLogger.shared.info("Prompt mode shortcut pressed (hold mode) - starting", source: "GlobalHotkeyManager")
+                self.triggerPromptMode()
+            }
+        } else {
+            if self.asrService.isRunning {
+                if self.isPromptModeRecordingProvider?() ?? false {
+                    DebugLogger.shared.info("Prompt mode shortcut pressed in Prompt mode - stopping", source: "GlobalHotkeyManager")
+                    self.stopRecordingIfNeeded()
+                } else {
+                    DebugLogger.shared.info("Prompt mode shortcut pressed while recording - switching mode", source: "GlobalHotkeyManager")
+                    self.triggerPromptMode()
+                }
+            } else {
+                DebugLogger.shared.info("Prompt mode shortcut triggered - starting", source: "GlobalHotkeyManager")
+                self.triggerPromptMode()
+            }
+        }
+        return true
+    }
+
+    private func handlePromptModeKeyUp(keyCode: UInt16) -> Bool {
+        guard self.promptModeShortcutEnabled, self.pressAndHoldMode,
+              self.isPromptModeKeyPressed, keyCode == self.promptModeShortcut.keyCode else { return false }
+        self.isPromptModeKeyPressed = false
+        DebugLogger.shared.info("Prompt mode shortcut released (hold mode) - stopping", source: "GlobalHotkeyManager")
+        self.stopRecordingIfNeeded()
+        return true
+    }
+
+    private func handlePromptModeFlagsChanged(keyCode: UInt16, isModifierPressed: Bool) -> Bool {
+        guard self.promptModeShortcutEnabled, self.promptModeShortcut.modifierFlags.isEmpty,
+              keyCode == self.promptModeShortcut.keyCode else { return false }
+        if isModifierPressed {
+            self.modifierOnlyKeyDown = true
+            self.otherKeyPressedDuringModifier = false
+            self.modifierPressStartTime = Date()
+            if self.pressAndHoldMode, !self.isPromptModeKeyPressed {
+                self.isPromptModeKeyPressed = true
+                self.pendingHoldModeStart?.cancel()
+                self.pendingHoldModeType = .promptMode
+                self.pendingHoldModeStart = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                    guard let self = self, !Task.isCancelled else { return }
+                    guard self.isPromptModeKeyPressed, !self.otherKeyPressedDuringModifier else {
+                        DebugLogger.shared.debug("Prompt mode hold start cancelled - key combo detected", source: "GlobalHotkeyManager")
+                        return
+                    }
+                    DebugLogger.shared.info("Prompt mode modifier held (hold mode) - starting after delay", source: "GlobalHotkeyManager")
+                    self.triggerPromptMode()
+                }
+            }
+        } else {
+            let wasCleanPress = !self.otherKeyPressedDuringModifier
+            self.modifierOnlyKeyDown = false
+            self.otherKeyPressedDuringModifier = false
+            self.modifierPressStartTime = nil
+            if self.pressAndHoldMode {
+                self.pendingHoldModeStart?.cancel()
+                self.pendingHoldModeStart = nil
+                self.pendingHoldModeType = nil
+                if self.isPromptModeKeyPressed {
+                    self.isPromptModeKeyPressed = false
+                    if self.asrService.isRunning {
+                        DebugLogger.shared.info("Prompt mode modifier released (hold mode) - stopping", source: "GlobalHotkeyManager")
+                        self.stopRecordingIfNeeded()
+                    }
+                }
+            } else if wasCleanPress {
+                if self.asrService.isRunning {
+                    if self.isPromptModeRecordingProvider?() ?? false {
+                        DebugLogger.shared.info("Prompt mode modifier released (toggle, same mode) - stopping", source: "GlobalHotkeyManager")
+                        self.stopRecordingIfNeeded()
+                    } else {
+                        DebugLogger.shared.info("Prompt mode modifier released (toggle, switch mode) - switching", source: "GlobalHotkeyManager")
+                        self.triggerPromptMode()
+                    }
+                } else {
+                    DebugLogger.shared.info("Prompt mode modifier released (toggle) - starting", source: "GlobalHotkeyManager")
+                    self.triggerPromptMode()
+                }
+            }
+        }
+        return true
     }
 
     private func triggerPromptMode() {
