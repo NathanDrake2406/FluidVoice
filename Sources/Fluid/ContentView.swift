@@ -1233,6 +1233,22 @@ struct ContentView: View {
         )
     }
 
+    private func resolveTypingTargetPID() -> (pid: pid_t?, shouldRestoreOriginalFocus: Bool) {
+        let originalPID = NotchContentState.shared.recordingTargetPID
+        let currentFocusedPID = TypingService.captureSystemFocusedPID()
+            ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+
+        let selfBundleID = Bundle.main.bundleIdentifier
+        if let currentFocusedPID,
+           let app = NSRunningApplication(processIdentifier: currentFocusedPID),
+           app.bundleIdentifier != selfBundleID
+        {
+            return (currentFocusedPID, currentFocusedPID == originalPID)
+        }
+
+        return (originalPID, true)
+    }
+
     // MARK: - Commented out app-specific prompts - using general processing only
 
     /*
@@ -1747,6 +1763,10 @@ struct ContentView: View {
             )
         }
 
+        let frontmostApp = NSWorkspace.shared.frontmostApplication
+        let frontmostName = frontmostApp?.localizedName ?? "Unknown"
+        let isFluidFrontmost = frontmostApp?.bundleIdentifier == Bundle.main.bundleIdentifier
+
         // Save to transcription history (transcription mode only, if enabled)
         if shouldPersistOutputs, SettingsStore.shared.saveTranscriptionHistory {
             let appInfo = self.recordingAppInfo ?? self.getCurrentAppInfo()
@@ -1758,8 +1778,13 @@ struct ContentView: View {
             )
         }
 
-        // Copy to clipboard if enabled (happens before typing as a backup)
-        if shouldPersistOutputs, SettingsStore.shared.copyTranscriptionToClipboard {
+        // When FluidVoice itself is frontmost, the bound editor already receives `finalText`.
+        // Avoid re-inserting or overwriting the clipboard in that self-target case.
+        let shouldCopyToClipboard = shouldPersistOutputs &&
+            SettingsStore.shared.copyTranscriptionToClipboard &&
+            !isFluidFrontmost
+
+        if shouldCopyToClipboard {
             ClipboardService.copyToClipboard(finalText)
             AnalyticsService.shared.capture(
                 .outputDelivered,
@@ -1771,10 +1796,7 @@ struct ContentView: View {
         }
 
         var didTypeExternally = false
-        let frontmostApp = NSWorkspace.shared.frontmostApplication
-        let frontmostName = frontmostApp?.localizedName ?? "Unknown"
-        let isFluidFrontmost = frontmostApp?.bundleIdentifier?.contains("fluid") == true
-        let shouldTypeExternally = shouldPersistOutputs && (!isFluidFrontmost || self.isTranscriptionFocused == false)
+        let shouldTypeExternally = shouldPersistOutputs && !isFluidFrontmost
 
         DebugLogger.shared.debug(
             "Typing decision → frontmost: \(frontmostName), fluidFrontmost: \(isFluidFrontmost), editorFocused: \(self.isTranscriptionFocused), willTypeExternally: \(shouldTypeExternally)",
@@ -1782,12 +1804,15 @@ struct ContentView: View {
         )
 
         if shouldTypeExternally {
+            let typingTarget = self.resolveTypingTargetPID()
             // Await typing completion before proceeding to edit tracker
             // This ensures the tracker window opens after text has been typed
-            await self.restoreFocusToRecordingTarget()
+            if typingTarget.shouldRestoreOriginalFocus {
+                await self.restoreFocusToRecordingTarget()
+            }
             self.asr.typeTextToActiveField(
                 finalText,
-                preferredTargetPID: NotchContentState.shared.recordingTargetPID
+                preferredTargetPID: typingTarget.pid
             )
             didTypeExternally = true
         }
@@ -1920,7 +1945,10 @@ struct ContentView: View {
             )
         }
 
-        if SettingsStore.shared.copyTranscriptionToClipboard {
+        let frontmostApp = NSWorkspace.shared.frontmostApplication
+        let isFluidFrontmost = frontmostApp?.bundleIdentifier == Bundle.main.bundleIdentifier
+
+        if SettingsStore.shared.copyTranscriptionToClipboard, !isFluidFrontmost {
             ClipboardService.copyToClipboard(finalText)
         }
 
@@ -1928,14 +1956,15 @@ struct ContentView: View {
             ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
         NotchContentState.shared.recordingTargetPID = focusedPID
 
-        let frontmostApp = NSWorkspace.shared.frontmostApplication
-        let isFluidFrontmost = frontmostApp?.bundleIdentifier?.contains("fluid") == true
-        let shouldTypeExternally = !isFluidFrontmost || self.isTranscriptionFocused == false
+        let shouldTypeExternally = !isFluidFrontmost
         if shouldTypeExternally {
-            await self.restoreFocusToRecordingTarget()
+            let typingTarget = self.resolveTypingTargetPID()
+            if typingTarget.shouldRestoreOriginalFocus {
+                await self.restoreFocusToRecordingTarget()
+            }
             self.asr.typeTextToActiveField(
                 finalText,
-                preferredTargetPID: NotchContentState.shared.recordingTargetPID
+                preferredTargetPID: typingTarget.pid
             )
         }
     }
@@ -1987,10 +2016,13 @@ struct ContentView: View {
         let isFluidFrontmost = frontmostApp?.bundleIdentifier?.contains("fluid") == true
         let shouldTypeExternally = !isFluidFrontmost || self.isTranscriptionFocused == false
         if shouldTypeExternally {
-            await self.restoreFocusToRecordingTarget()
+            let typingTarget = self.resolveTypingTargetPID()
+            if typingTarget.shouldRestoreOriginalFocus {
+                await self.restoreFocusToRecordingTarget()
+            }
             self.asr.typeTextToActiveField(
                 finalText,
-                preferredTargetPID: NotchContentState.shared.recordingTargetPID
+                preferredTargetPID: typingTarget.pid
             )
         }
 
@@ -2035,10 +2067,13 @@ struct ContentView: View {
             }
 
             // Type the rewritten text
-            await self.restoreFocusToRecordingTarget()
+            let typingTarget = self.resolveTypingTargetPID()
+            if typingTarget.shouldRestoreOriginalFocus {
+                await self.restoreFocusToRecordingTarget()
+            }
             self.asr.typeTextToActiveField(
                 self.rewriteModeService.rewrittenText,
-                preferredTargetPID: NotchContentState.shared.recordingTargetPID
+                preferredTargetPID: typingTarget.pid
             )
             AnalyticsService.shared.capture(
                 .outputDelivered,
