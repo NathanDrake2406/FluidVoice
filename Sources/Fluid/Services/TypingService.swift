@@ -47,11 +47,11 @@ final class TypingService {
     /// if the layout data is unavailable.
     private static func virtualKeyCode(for character: Character, qwertyFallback: CGKeyCode) -> CGKeyCode {
         if Thread.isMainThread {
-            return tisLookup(for: character, qwertyFallback: qwertyFallback)
+            return self.tisLookup(for: character, qwertyFallback: qwertyFallback)
         }
         var result = qwertyFallback
         DispatchQueue.main.sync {
-            result = tisLookup(for: character, qwertyFallback: qwertyFallback)
+            result = self.tisLookup(for: character, qwertyFallback: qwertyFallback)
         }
         return result
     }
