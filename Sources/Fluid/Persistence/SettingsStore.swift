@@ -1618,8 +1618,8 @@ final class SettingsStore: ObservableObject {
             {
                 return shortcut
             }
-            // Default to Right Command key (keyCode: 54, no modifiers)
-            return HotkeyShortcut(keyCode: 54, modifierFlags: [])
+            // Default to Right Shift key (keyCode: 60, no modifiers) — avoids conflict with Command Mode (Right Command, keyCode 54)
+            return HotkeyShortcut(keyCode: 60, modifierFlags: [])
         }
         set {
             objectWillChange.send()
