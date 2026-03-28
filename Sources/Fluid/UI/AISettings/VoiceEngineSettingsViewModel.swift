@@ -86,20 +86,7 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
 
         switch self.modelSortOption {
         case .provider:
-            models.sort { lhs, rhs in
-                let lhsRecommended = lhs.badgeText == "FluidVoice Pick"
-                let rhsRecommended = rhs.badgeText == "FluidVoice Pick"
-                if lhsRecommended != rhsRecommended {
-                    return lhsRecommended && !rhsRecommended
-                }
-
-                let brandOrder = lhs.brandName.localizedCaseInsensitiveCompare(rhs.brandName)
-                if brandOrder != .orderedSame {
-                    return brandOrder == .orderedAscending
-                }
-
-                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
-            }
+            models.sort { $0.brandName.localizedCaseInsensitiveCompare($1.brandName) == .orderedAscending }
         case .accuracy:
             models.sort { $0.accuracyPercent > $1.accuracyPercent }
         case .speed:
