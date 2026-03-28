@@ -583,7 +583,7 @@ struct OnboardingFlowView: View {
             case .multipleLanguages:
                 return "Multiple languages"
             case .other:
-                return "Other"
+                return "More options"
             }
         }
 
@@ -594,7 +594,7 @@ struct OnboardingFlowView: View {
             case .multipleLanguages:
                 return "Uses Parakeet TDT v3 or Cohere"
             case .other:
-                return "Whisper and other manual choices"
+                return "Whisper and manual choices"
             }
         }
     }
@@ -663,13 +663,20 @@ struct OnboardingFlowView: View {
         self.recommendedOnboardingModel.displayName
     }
 
+    private var recommendedOnboardingModels: [SettingsStore.SpeechModel] {
+        if CPUArchitecture.isAppleSilicon, self.preferredLanguageChoice == .multipleLanguages {
+            return [.parakeetTDT, .cohereTranscribeSixBit].filter { SettingsStore.SpeechModel.availableModels.contains($0) }
+        }
+        return [self.recommendedOnboardingModel]
+    }
+
     private var recommendedModelReasonText: String {
         if CPUArchitecture.isAppleSilicon {
             switch self.preferredLanguageChoice {
             case .englishOnly:
                 return "Best if you mainly speak English. Lower complexity and tuned for English dictation."
             case .multipleLanguages:
-                return "Best if you switch languages. Broader support with Parakeet TDT v3. Cohere is also available below if you want a higher-accuracy, larger model."
+                return "Best if you switch languages. Parakeet TDT v3 is the lighter default. Cohere is also recommended if you want the larger, higher-accuracy option."
             case .other:
                 return "Choose a different model below if neither of the default language paths fits."
             }
@@ -698,16 +705,7 @@ struct OnboardingFlowView: View {
         case .englishOnly:
             return []
         case .multipleLanguages:
-            let multilingualOptions = filtered.filter { model in
-                model != .parakeetTDTv2
-            }
-            let preferredOrder: [SettingsStore.SpeechModel] = [.cohereTranscribeSixBit, .whisperBase, .whisperSmall]
-            return multilingualOptions.sorted { lhs, rhs in
-                let lhsIndex = preferredOrder.firstIndex(of: lhs) ?? preferredOrder.count
-                let rhsIndex = preferredOrder.firstIndex(of: rhs) ?? preferredOrder.count
-                if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
-                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
-            }
+            return []
         case .other:
             return filtered.filter { model in
                 model != .parakeetTDT && model != .parakeetTDTv2 && model != .cohereTranscribeSixBit
@@ -724,11 +722,14 @@ struct OnboardingFlowView: View {
     }
 
     private var shouldShowAlternativeModels: Bool {
-        !self.shouldShowLanguageChoice || self.preferredLanguageChoice != .englishOnly
+        if self.shouldShowLanguageChoice {
+            return self.preferredLanguageChoice == .other
+        }
+        return true
     }
 
     private var isRecommendedModelSelected: Bool {
-        self.isOnboardingModelSelected(self.recommendedOnboardingModel)
+        self.recommendedOnboardingModels.contains(self.settings.selectedSpeechModel)
     }
 
     private var isRecommendedModelDownloaded: Bool {
@@ -909,7 +910,19 @@ struct OnboardingFlowView: View {
                             Spacer()
                         }
 
-                        if self.showsMappedRecommendedModel {
+                        if self.preferredLanguageChoice == .multipleLanguages && self.shouldShowLanguageChoice {
+                            LazyVGrid(
+                                columns: [
+                                    GridItem(.flexible(), spacing: 10, alignment: .top),
+                                    GridItem(.flexible(), spacing: 10, alignment: .top),
+                                ],
+                                spacing: 10
+                            ) {
+                                ForEach(self.recommendedOnboardingModels) { model in
+                                    self.onboardingRecommendedModelCard(for: model)
+                                }
+                            }
+                        } else if self.showsMappedRecommendedModel {
                             HStack(spacing: 10) {
                                 Label(self.recommendedOnboardingModel.downloadSize, systemImage: "internaldrive")
                                     .font(.caption)
@@ -964,7 +977,11 @@ struct OnboardingFlowView: View {
                         }
 
                         HStack(spacing: 10) {
-                            if self.isRecommendedModelReady {
+                            if self.preferredLanguageChoice == .multipleLanguages && self.shouldShowLanguageChoice {
+                                Text("Choose either FluidVoice-recommended multilingual model.")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            } else if self.isRecommendedModelReady {
                                 Label(
                                     "Model downloaded and loaded",
                                     systemImage: "checkmark.seal.fill"
@@ -986,7 +1003,9 @@ struct OnboardingFlowView: View {
 
                             Spacer()
 
-                            if self.preferredLanguageChoice == .other && self.shouldShowLanguageChoice {
+                            if self.preferredLanguageChoice == .multipleLanguages && self.shouldShowLanguageChoice {
+                                EmptyView()
+                            } else if self.preferredLanguageChoice == .other && self.shouldShowLanguageChoice {
                                 Text("Choose a model from the options below.")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.secondary)
@@ -1009,7 +1028,7 @@ struct OnboardingFlowView: View {
                         if self.shouldShowAlternativeModels && !self.onboardingAlternativeModels.isEmpty {
                             Divider().padding(.vertical, 2)
 
-                            Text("Other popular options")
+                            Text("More model options")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(self.theme.palette.primaryText)
 
@@ -1412,6 +1431,101 @@ struct OnboardingFlowView: View {
         .buttonStyle(.plain)
     }
 
+    private func onboardingRecommendedModelCard(for model: SettingsStore.SpeechModel) -> some View {
+        let isSelected = self.isOnboardingModelSelected(model)
+        let isDownloaded = self.isOnboardingModelDownloaded(model)
+        let isPreparing = self.isPreparingOnboardingModel(model)
+        let isReady = self.isOnboardingModelReady(model)
+
+        return Button {
+            self.selectOnboardingModel(model, preserveManualChoice: true)
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(model.displayName)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(self.theme.palette.primaryText)
+
+                    Spacer(minLength: 8)
+
+                    Text("FV Recommended")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(self.theme.palette.accent.opacity(0.18)))
+                        .foregroundStyle(self.theme.palette.accent)
+                }
+
+                Text(model.cardDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+
+                HStack(spacing: 10) {
+                    Label(model.downloadSize, systemImage: "internaldrive")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(model.languageSupport)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+
+                if isPreparing {
+                    if self.asr.isDownloadingModel, let progress = self.asr.downloadProgress {
+                        ProgressView(value: progress)
+                            .tint(self.theme.palette.accent)
+                        Text(progress >= 0.82 ? "Finalizing..." : "Downloading \(Int(progress * 100))%")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Loading model...")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if isReady {
+                    Label("Downloaded and loaded", systemImage: "checkmark.circle.fill")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.fluidGreen)
+                } else if isDownloaded {
+                    Label(isSelected ? "Downloaded. Click Load to finish." : "Downloaded", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("Not downloaded yet", systemImage: "arrow.down.circle")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack {
+                    Spacer()
+                    Button(self.onboardingModelActionButtonTitle(for: model)) {
+                        self.prepareOnboardingModel(model, preserveManualChoice: true)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(self.theme.palette.accent)
+                    .disabled(self.asr.isRunning || isPreparing || isReady)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 190, alignment: .topLeading)
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(self.theme.palette.cardBackground.opacity(isSelected ? 0.82 : 0.55))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(
+                                isSelected ? self.theme.palette.accent.opacity(0.45) : self.theme.palette.cardBorder.opacity(0.32),
+                                lineWidth: 1
+                            )
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
     private func selectOnboardingModel(_ model: SettingsStore.SpeechModel, preserveManualChoice: Bool = false) {
         if self.settings.selectedSpeechModel != model {
             self.settings.selectedSpeechModel = model
@@ -1429,9 +1543,9 @@ struct OnboardingFlowView: View {
             case .englishOnly:
                 return "English only uses \(self.recommendedOnboardingModelDisplayName)"
             case .multipleLanguages:
-                return "Multiple languages uses \(self.recommendedOnboardingModelDisplayName)"
+                return "FluidVoice recommends Parakeet TDT v3 and Cohere"
             case .other:
-                return "Other languages or workflows"
+                return "Whisper and more options"
             }
         }
 
