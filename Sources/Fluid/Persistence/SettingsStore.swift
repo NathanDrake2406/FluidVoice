@@ -2684,10 +2684,32 @@ final class SettingsStore: ObservableObject {
         /// Large Whisper models are too slow for streaming, so they only do final transcription on stop.
         var supportsStreaming: Bool {
             switch self {
-            case .qwen3Asr, .cohereTranscribeSixBit, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+            case .qwen3Asr, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
                 return false // Too slow for real-time chunk processing
             default:
                 return true // All other models support streaming
+            }
+        }
+
+        /// Preview update cadence for real-time transcription.
+        /// Models without native incremental decoding should use a slower interval.
+        var streamingPreviewIntervalSeconds: Double {
+            switch self {
+            case .cohereTranscribeSixBit:
+                return 2.0
+            default:
+                return 0.6
+            }
+        }
+
+        /// Minimum audio required before attempting a preview decode.
+        /// Cohere performs better with a slightly larger prefix than the default 1 second.
+        var minimumStreamingPreviewSeconds: Double {
+            switch self {
+            case .cohereTranscribeSixBit:
+                return 2.0
+            default:
+                return 1.0
             }
         }
 

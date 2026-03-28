@@ -398,7 +398,6 @@ final class ASRService: ObservableObject {
     // Streaming transcription state (no VAD)
     private var streamingTask: Task<Void, Never>?
     private var lastProcessedSampleCount: Int = 0
-    private let chunkDurationSeconds: Double = 0.6 // Fast interval - TranscriptionExecutor actor handles CoreML serialization
     private var isProcessingChunk: Bool = false
     private var skipNextChunk: Bool = false
     private var previousFullTranscription: String = ""
@@ -411,6 +410,14 @@ final class ASRService: ObservableObject {
     private var audioLevelSubject = PassthroughSubject<CGFloat, Never>()
     var audioLevelPublisher: AnyPublisher<CGFloat, Never> { self.audioLevelSubject.eraseToAnyPublisher() }
     private var lastAudioLevelSentAt: TimeInterval = 0
+
+    private var streamingChunkDurationSeconds: Double {
+        SettingsStore.shared.selectedSpeechModel.streamingPreviewIntervalSeconds
+    }
+
+    private var minimumStreamingPreviewSamples: Int {
+        Int(SettingsStore.shared.selectedSpeechModel.minimumStreamingPreviewSeconds * 16_000)
+    }
 
     /// Handles AVAudioEngine tap processing off the @MainActor to avoid touching main-actor state
     /// from CoreAudio's realtime callback thread.
@@ -2190,7 +2197,10 @@ final class ASRService: ObservableObject {
         self.streamingTask?.cancel()
         guard self.isAsrReady else { return }
 
-        DebugLogger.shared.debug("Starting streaming transcription task (interval: \(self.chunkDurationSeconds)s)", source: "ASRService")
+        DebugLogger.shared.debug(
+            "Starting streaming transcription task (interval: \(self.streamingChunkDurationSeconds)s, minSamples: \(self.minimumStreamingPreviewSamples))",
+            source: "ASRService"
+        )
 
         self.streamingTask = Task { [weak self] in
             await self?.runStreamingLoop()
@@ -2251,7 +2261,7 @@ final class ASRService: ObservableObject {
             }
 
             do {
-                try await Task.sleep(nanoseconds: UInt64(self.chunkDurationSeconds * 1_000_000_000))
+                try await Task.sleep(nanoseconds: UInt64(self.streamingChunkDurationSeconds * 1_000_000_000))
             } catch {
                 DebugLogger.shared.debug("Streaming transcription task cancelled", source: "ASRService")
                 break
@@ -2281,7 +2291,7 @@ final class ASRService: ObservableObject {
         // Thread-safe count check
         let currentSampleCount = self.audioBuffer.count
         // Most ASR models require at least 1 second of 16kHz audio (16,000 samples) to transcribe
-        let minSamples = 16_000 // 1 second minimum required by transcription providers
+        let minSamples = self.minimumStreamingPreviewSamples
         guard currentSampleCount >= minSamples else {
             // Only log once per recording session to avoid spam
             if currentSampleCount > 0, self.lastProcessedSampleCount == 0 {
@@ -2342,8 +2352,11 @@ final class ASRService: ObservableObject {
 
             // If transcription takes longer than the interval, skip next to prevent queue buildup
             // This allows slower machines to still work without overwhelming the system
-            if duration > self.chunkDurationSeconds {
-                DebugLogger.shared.debug("⚠️ Transcription slow (\(String(format: "%.2f", duration))s > \(self.chunkDurationSeconds)s), skipping next chunk", source: "ASRService")
+            if duration > self.streamingChunkDurationSeconds {
+                DebugLogger.shared.debug(
+                    "⚠️ Transcription slow (\(String(format: "%.2f", duration))s > \(self.streamingChunkDurationSeconds)s), skipping next chunk",
+                    source: "ASRService"
+                )
                 self.skipNextChunk = true
             }
         } catch {
