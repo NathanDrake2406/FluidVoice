@@ -86,6 +86,14 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
         try await self.transcribeFinal(samples)
     }
 
+    func transcribeStreaming(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        DebugLogger.shared.debug(
+            "ExternalCoreML: streaming preview request [samples=\(samples.count)]",
+            source: "ExternalCoreML"
+        )
+        return try await self.transcribeFinal(samples)
+    }
+
     func transcribeFile(at fileURL: URL) async throws -> ASRTranscriptionResult {
         guard let manager = self.cohereManager else {
             DebugLogger.shared.error(
