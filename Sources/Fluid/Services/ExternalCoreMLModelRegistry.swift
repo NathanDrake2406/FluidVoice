@@ -1,0 +1,154 @@
+import CoreML
+import Foundation
+
+enum ExternalCoreMLASRBackend {
+    case cohereTranscribe
+}
+
+struct ExternalCoreMLManifestIdentity: Decodable {
+    let modelID: String
+    let sampleRate: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case modelID = "model_id"
+        case sampleRate = "sample_rate"
+    }
+}
+
+enum ExternalCoreMLArtifactsValidationError: LocalizedError {
+    case missingEntries([String])
+    case manifestMissing(URL)
+    case manifestUnreadable(URL, Error)
+    case unexpectedModelID(expected: String, actual: String)
+    case unexpectedSampleRate(expected: Int, actual: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingEntries(let entries):
+            return "Missing required files: \(entries.joined(separator: ", "))"
+        case .manifestMissing(let url):
+            return "Manifest file not found at \(url.path)"
+        case .manifestUnreadable(let url, let error):
+            return "Failed to read manifest at \(url.path): \(error.localizedDescription)"
+        case .unexpectedModelID(let expected, let actual):
+            return "Unexpected model_id '\(actual)'. Expected '\(expected)'."
+        case .unexpectedSampleRate(let expected, let actual):
+            return "Unexpected sample rate \(actual). Expected \(expected)."
+        }
+    }
+}
+
+struct ExternalCoreMLASRModelSpec {
+    let backend: ExternalCoreMLASRBackend
+    let artifactFolderHint: String
+    let manifestFileName: String
+    let frontendFileName: String
+    let encoderFileName: String
+    let decoderFileName: String
+    let cachedDecoderFileName: String
+    let expectedModelID: String
+    let expectedSampleRate: Int
+    let computeUnits: MLComputeUnits
+    let sourceURL: URL?
+
+    var requiredEntries: [String] {
+        [
+            self.manifestFileName,
+            self.frontendFileName,
+            self.encoderFileName,
+            self.decoderFileName,
+            self.cachedDecoderFileName,
+        ]
+    }
+
+    func url(for entry: String, in directory: URL) -> URL {
+        directory.appendingPathComponent(entry, isDirectory: entry.hasSuffix(".mlpackage"))
+    }
+
+    func validateArtifacts(at directory: URL) -> Bool {
+        (try? self.validateArtifactsOrThrow(at: directory)) != nil
+    }
+
+    func missingEntries(at directory: URL) -> [String] {
+        self.requiredEntries.filter { entry in
+            let url = self.url(for: entry, in: directory)
+            return FileManager.default.fileExists(atPath: url.path) == false
+        }
+    }
+
+    func validateArtifactsOrThrow(at directory: URL) throws {
+        let missingEntries = self.missingEntries(at: directory)
+        guard missingEntries.isEmpty else {
+            throw ExternalCoreMLArtifactsValidationError.missingEntries(missingEntries)
+        }
+
+        let manifestURL = self.url(for: self.manifestFileName, in: directory)
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
+            throw ExternalCoreMLArtifactsValidationError.manifestMissing(manifestURL)
+        }
+
+        let manifest: ExternalCoreMLManifestIdentity
+        do {
+            let data = try Data(contentsOf: manifestURL)
+            manifest = try JSONDecoder().decode(ExternalCoreMLManifestIdentity.self, from: data)
+        } catch {
+            throw ExternalCoreMLArtifactsValidationError.manifestUnreadable(manifestURL, error)
+        }
+
+        guard manifest.modelID == self.expectedModelID else {
+            throw ExternalCoreMLArtifactsValidationError.unexpectedModelID(
+                expected: self.expectedModelID,
+                actual: manifest.modelID
+            )
+        }
+
+        guard manifest.sampleRate == self.expectedSampleRate else {
+            throw ExternalCoreMLArtifactsValidationError.unexpectedSampleRate(
+                expected: self.expectedSampleRate,
+                actual: manifest.sampleRate
+            )
+        }
+    }
+}
+
+enum ExternalCoreMLModelRegistry {
+    static func spec(for model: SettingsStore.SpeechModel) -> ExternalCoreMLASRModelSpec? {
+        switch model {
+        case .cohereTranscribeSixBit:
+            return ExternalCoreMLASRModelSpec(
+                backend: .cohereTranscribe,
+                artifactFolderHint: "cohere-transcribe-03-2026-CoreML-6bit",
+                manifestFileName: "coreml_manifest.json",
+                frontendFileName: "cohere_frontend.mlpackage",
+                encoderFileName: "cohere_encoder.mlpackage",
+                decoderFileName: "cohere_decoder_fullseq_masked.mlpackage",
+                cachedDecoderFileName: "cohere_decoder_cached.mlpackage",
+                expectedModelID: "CohereLabs/cohere-transcribe-03-2026",
+                expectedSampleRate: 16000,
+                computeUnits: .cpuAndGPU,
+                sourceURL: URL(string: "https://huggingface.co/BarathwajAnandan/cohere-transcribe-03-2026-CoreML-6bit")
+            )
+        default:
+            return nil
+        }
+    }
+}
+
+extension SettingsStore.SpeechModel {
+    var externalCoreMLSpec: ExternalCoreMLASRModelSpec? {
+        ExternalCoreMLModelRegistry.spec(for: self)
+    }
+
+    var requiresExternalArtifacts: Bool {
+        self.externalCoreMLSpec != nil
+    }
+
+    var supportsCustomVocabulary: Bool {
+        switch self {
+        case .parakeetTDT, .parakeetTDTv2:
+            return true
+        default:
+            return false
+        }
+    }
+}

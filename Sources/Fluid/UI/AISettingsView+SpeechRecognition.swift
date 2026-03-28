@@ -164,7 +164,7 @@ extension VoiceEngineSettingsView {
     /// Stats panel showing speed/accuracy bars that animate when model changes
     var modelStatsPanel: some View {
         let model = self.viewModel.previewSpeechModel
-        let supportsParakeetCustomWords = model == .parakeetTDT || model == .parakeetTDTv2
+        let supportsCustomWords = model.supportsCustomVocabulary
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 20) {
@@ -270,7 +270,58 @@ extension VoiceEngineSettingsView {
                 .animation(.spring(response: 0.5, dampingFraction: 0.7), value: model.id)
             }
 
-            if supportsParakeetCustomWords {
+            if model.requiresExternalArtifacts {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .center, spacing: 10) {
+                        Image(systemName: "folder.badge.gearshape")
+                            .font(.caption)
+                            .foregroundStyle(self.theme.palette.accent)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("External CoreML artifacts")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                            Text(self.viewModel.externalArtifactsDirectoryDisplay(for: model) ?? "Choose the Hugging Face model folder before activating this model.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(3)
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Button(self.viewModel.externalArtifactsDirectoryDisplay(for: model) == nil ? "Import Folder" : "Change Folder") {
+                            self.viewModel.chooseExternalArtifactsDirectory(for: model)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(self.theme.palette.accent)
+                        .controlSize(.small)
+                    }
+
+                    if self.viewModel.externalArtifactsDirectoryDisplay(for: model) != nil {
+                        HStack {
+                            Button("Clear Folder") {
+                                self.viewModel.clearExternalArtifactsDirectory(for: model)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .foregroundStyle(.red.opacity(0.8))
+                            Spacer()
+                        }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(self.theme.palette.accent.opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(self.theme.palette.accent.opacity(0.20), lineWidth: 1)
+                        )
+                )
+            }
+
+            if supportsCustomWords {
                 HStack(alignment: .center, spacing: 10) {
                     Image(systemName: "checkmark.seal.fill")
                         .font(.caption)
@@ -448,12 +499,12 @@ extension VoiceEngineSettingsView {
                 }
             } else {
                 ZStack(alignment: .trailing) {
-                    Text("Not downloaded")
+                    Text(model.requiresExternalArtifacts ? "Not imported" : "Not downloaded")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .opacity(isSelected ? 0 : 1)
 
-                    Button("Download") {
+                    Button(model.requiresExternalArtifacts ? "Import Folder" : "Download") {
                         self.viewModel.previewSpeechModel = model
                         self.viewModel.downloadSpeechModel(model)
                     }
@@ -515,7 +566,7 @@ extension VoiceEngineSettingsView {
                 Button(action: { Task { await self.viewModel.deleteModels() } }) {
                     HStack(spacing: 4) {
                         Image(systemName: "trash")
-                        Text("Delete")
+                        Text(self.settings.selectedSpeechModel.requiresExternalArtifacts ? "Forget" : "Delete")
                     }
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -523,12 +574,14 @@ extension VoiceEngineSettingsView {
                 .buttonStyle(.plain)
             } else if self.viewModel.asr.modelsExistOnDisk {
                 Image(systemName: "doc.fill").foregroundStyle(self.theme.palette.accent).font(.caption)
-                Text("Cached").font(.caption).foregroundStyle(.secondary)
+                Text(self.settings.selectedSpeechModel.requiresExternalArtifacts ? "Imported" : "Cached")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 Button(action: { Task { await self.viewModel.deleteModels() } }) {
                     HStack(spacing: 4) {
                         Image(systemName: "trash")
-                        Text("Delete")
+                        Text(self.settings.selectedSpeechModel.requiresExternalArtifacts ? "Forget" : "Delete")
                     }
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -538,7 +591,7 @@ extension VoiceEngineSettingsView {
                 Button(action: { Task { await self.viewModel.downloadModels() } }) {
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.down.circle.fill")
-                        Text("Download")
+                        Text(self.settings.selectedSpeechModel.requiresExternalArtifacts ? "Import" : "Download")
                     }
                     .font(.caption)
                 }

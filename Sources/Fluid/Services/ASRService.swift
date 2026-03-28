@@ -126,17 +126,19 @@ final class ASRService: ObservableObject {
 
     /// Returns a user-friendly status message for model loading state
     var modelStatusMessage: String {
+        let usesExternalArtifacts = SettingsStore.shared.selectedSpeechModel.requiresExternalArtifacts
         if self.isAsrReady { return "Model ready" }
-        if self.isDownloadingModel { return "Downloading model..." }
+        if self.isDownloadingModel { return usesExternalArtifacts ? "Importing model..." : "Downloading model..." }
         if self.isLoadingModel { return "Loading model into memory..." }
-        if self.modelsExistOnDisk { return "Model cached, needs loading" }
-        return "Model not downloaded"
+        if self.modelsExistOnDisk { return usesExternalArtifacts ? "Model imported, needs loading" : "Model cached, needs loading" }
+        return usesExternalArtifacts ? "Model not imported" : "Model not downloaded"
     }
 
     // MARK: - Transcription Provider (Settable)
 
     /// Cached providers to avoid re-instantiation
     private var fluidAudioProvider: FluidAudioProvider?
+    private var externalCoreMLProvider: ExternalCoreMLTranscriptionProvider?
     private var whisperProvider: WhisperProvider?
     private var appleSpeechProvider: AppleSpeechProvider?
     /// Stored as Any? because @available cannot be applied to stored properties
@@ -164,6 +166,8 @@ final class ASRService: ObservableObject {
             return self.getAppleSpeechProvider()
         case .parakeetTDT, .parakeetTDTv2:
             return self.getFluidAudioProvider()
+        case .cohereTranscribeSixBit:
+            return self.getExternalCoreMLProvider()
         case .qwen3Asr:
             DebugLogger.shared.warning(
                 "ASRService: Qwen provider removed; falling back to FluidAudio Parakeet path",
@@ -187,6 +191,16 @@ final class ASRService: ObservableObject {
             "ASRService: Created FluidAudio provider [vocabBoosting=\(SettingsStore.shared.vocabularyBoostingEnabled)]",
             source: "ASRService"
         )
+        return provider
+    }
+
+    private func getExternalCoreMLProvider() -> ExternalCoreMLTranscriptionProvider {
+        if let existing = externalCoreMLProvider {
+            return existing
+        }
+        let provider = ExternalCoreMLTranscriptionProvider()
+        self.externalCoreMLProvider = provider
+        DebugLogger.shared.info("ASRService: Created external CoreML provider", source: "ASRService")
         return provider
     }
 
@@ -248,6 +262,8 @@ final class ASRService: ObservableObject {
             // Create a new provider configured for the specific model
             let provider = FluidAudioProvider(modelOverride: model, configureWordBoosting: false)
             return provider
+        case .cohereTranscribeSixBit:
+            return ExternalCoreMLTranscriptionProvider(modelOverride: model)
         case .qwen3Asr:
             // Qwen support removed; route legacy requests to Parakeet v3.
             return FluidAudioProvider(modelOverride: .parakeetTDT, configureWordBoosting: false)
@@ -323,6 +339,7 @@ final class ASRService: ObservableObject {
 
         // Reset cached providers to force re-initialization with new settings
         self.fluidAudioProvider = nil
+        self.externalCoreMLProvider = nil
         self.whisperProvider = nil
         self.appleSpeechProvider = nil
         self._appleSpeechAnalyzerProvider = nil
@@ -440,7 +457,7 @@ final class ASRService: ObservableObject {
     @MainActor
     private func handleParakeetVocabularyDidChange() {
         let model = SettingsStore.shared.selectedSpeechModel
-        guard model == .parakeetTDT || model == .parakeetTDTv2 else { return }
+        guard model.supportsCustomVocabulary else { return }
         guard self.isRunning == false else {
             self.hasPendingParakeetVocabularyReload = true
             DebugLogger.shared.info(
@@ -459,7 +476,7 @@ final class ASRService: ObservableObject {
 
         self.hasPendingParakeetVocabularyReload = false
         let model = SettingsStore.shared.selectedSpeechModel
-        guard model == .parakeetTDT || model == .parakeetTDTv2 else { return }
+        guard model.supportsCustomVocabulary else { return }
 
         DebugLogger.shared.info(
             "ASRService: Applying queued vocabulary reload after recording stopped.",
@@ -470,7 +487,7 @@ final class ASRService: ObservableObject {
 
     private func refreshWordBoostStatus() {
         let model = SettingsStore.shared.selectedSpeechModel
-        guard model == .parakeetTDT || model == .parakeetTDTv2,
+        guard model.supportsCustomVocabulary,
               let provider = self.fluidAudioProvider,
               provider.isReady
         else {
@@ -492,7 +509,7 @@ final class ASRService: ObservableObject {
 
     private func recordWordBoostHitIfAny(transcribedText: String) {
         let model = SettingsStore.shared.selectedSpeechModel
-        guard model == .parakeetTDT || model == .parakeetTDTv2,
+        guard model.supportsCustomVocabulary,
               let provider = self.fluidAudioProvider,
               provider.isWordBoostingActive
         else { return }
