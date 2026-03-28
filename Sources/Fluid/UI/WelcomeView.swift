@@ -592,9 +592,9 @@ struct OnboardingFlowView: View {
             case .englishOnly:
                 return "Uses Parakeet TDT v2"
             case .multipleLanguages:
-                return "Uses Parakeet TDT v3"
+                return "Uses Parakeet TDT v3 or Cohere"
             case .other:
-                return "Choose a different model manually"
+                return "Whisper and other manual choices"
             }
         }
     }
@@ -710,7 +710,7 @@ struct OnboardingFlowView: View {
             }
         case .other:
             return filtered.filter { model in
-            model != .parakeetTDT && model != .parakeetTDTv2
+                model != .parakeetTDT && model != .parakeetTDTv2 && model != .cohereTranscribeSixBit
             }
         }
     }
@@ -1488,7 +1488,7 @@ struct OnboardingFlowView: View {
         switch self.settings.selectedSpeechModel {
         case .parakeetTDTv2:
             self.preferredLanguageChoice = .englishOnly
-        case .parakeetTDT:
+        case .parakeetTDT, .cohereTranscribeSixBit:
             self.preferredLanguageChoice = .multipleLanguages
         default:
             self.preferredLanguageChoice = .other
