@@ -669,7 +669,7 @@ struct OnboardingFlowView: View {
             case .englishOnly:
                 return "Best if you mainly speak English. Lower complexity and tuned for English dictation."
             case .multipleLanguages:
-                return "Best if you switch languages. Broader support with Parakeet TDT v3."
+                return "Best if you switch languages. Broader support with Parakeet TDT v3. Cohere is also available below if you want a higher-accuracy, larger model."
             case .other:
                 return "Choose a different model below if neither of the default language paths fits."
             }
@@ -679,7 +679,7 @@ struct OnboardingFlowView: View {
 
     private var onboardingModelOptions: [SettingsStore.SpeechModel] {
         let candidates: [SettingsStore.SpeechModel] = CPUArchitecture.isAppleSilicon
-            ? [.parakeetTDT, .parakeetTDTv2, .whisperBase, .whisperSmall]
+            ? [.parakeetTDT, .cohereTranscribeSixBit, .parakeetTDTv2, .whisperBase, .whisperSmall]
             : [.whisperBase, .whisperTiny, .whisperSmall, .whisperMedium]
 
         var seenModelIDs = Set<String>()
@@ -691,11 +691,27 @@ struct OnboardingFlowView: View {
 
     private var onboardingAlternativeModels: [SettingsStore.SpeechModel] {
         let filtered = self.onboardingModelOptions.filter { $0 != self.recommendedOnboardingModel }
-        guard self.preferredLanguageChoice == .other, self.shouldShowLanguageChoice else {
+        guard self.shouldShowLanguageChoice else {
             return filtered
         }
-        return filtered.filter { model in
+        switch self.preferredLanguageChoice {
+        case .englishOnly:
+            return []
+        case .multipleLanguages:
+            let multilingualOptions = filtered.filter { model in
+                model != .parakeetTDTv2
+            }
+            let preferredOrder: [SettingsStore.SpeechModel] = [.cohereTranscribeSixBit, .whisperBase, .whisperSmall]
+            return multilingualOptions.sorted { lhs, rhs in
+                let lhsIndex = preferredOrder.firstIndex(of: lhs) ?? preferredOrder.count
+                let rhsIndex = preferredOrder.firstIndex(of: rhs) ?? preferredOrder.count
+                if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
+                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+            }
+        case .other:
+            return filtered.filter { model in
             model != .parakeetTDT && model != .parakeetTDTv2
+            }
         }
     }
 
@@ -708,7 +724,7 @@ struct OnboardingFlowView: View {
     }
 
     private var shouldShowAlternativeModels: Bool {
-        !self.shouldShowLanguageChoice || self.preferredLanguageChoice == .other
+        !self.shouldShowLanguageChoice || self.preferredLanguageChoice != .englishOnly
     }
 
     private var isRecommendedModelSelected: Bool {
