@@ -726,6 +726,9 @@ extension VoiceEngineSettingsView {
         if brand.contains("nvidia") {
             return "Provider_NVIDIA"
         }
+        if brand.contains("cohere") {
+            return "Provider_Cohere"
+        }
         if brand.contains("openai") || brand.contains("whisper") {
             return "Provider_OpenAI"
         }
