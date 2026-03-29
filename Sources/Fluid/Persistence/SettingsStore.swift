@@ -2626,7 +2626,7 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDT: return 1.0
             case .parakeetTDTv2: return 1.0
             case .qwen3Asr: return 0.45
-            case .cohereTranscribeSixBit: return 0.80
+            case .cohereTranscribeSixBit: return 0.85
             case .appleSpeech: return 0.60
             case .appleSpeechAnalyzer: return 0.85
             case .whisperTiny: return 0.90
@@ -2644,7 +2644,7 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDT: return 0.92
             case .parakeetTDTv2: return 0.96
             case .qwen3Asr: return 0.90
-            case .cohereTranscribeSixBit: return 0.97
+            case .cohereTranscribeSixBit: return 0.98
             case .appleSpeech: return 0.60
             case .appleSpeechAnalyzer: return 0.80
             case .whisperTiny: return 0.40
