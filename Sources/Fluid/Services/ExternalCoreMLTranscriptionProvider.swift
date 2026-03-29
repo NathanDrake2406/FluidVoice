@@ -160,12 +160,17 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
             try FileManager.default.removeItem(at: compiledDirectory)
         }
 
-        if FileManager.default.fileExists(atPath: directory.path) {
+        if FileManager.default.fileExists(atPath: directory.path), Self.isAppManagedArtifactsDirectory(directory, spec: spec) {
             DebugLogger.shared.info(
                 "ExternalCoreML: removing downloaded artifacts at \(directory.path)",
                 source: "ExternalCoreML"
             )
             try FileManager.default.removeItem(at: directory)
+        } else if FileManager.default.fileExists(atPath: directory.path) {
+            DebugLogger.shared.warning(
+                "ExternalCoreML: skipping deletion for non-managed artifacts directory at \(directory.path)",
+                source: "ExternalCoreML"
+            )
         }
 
         self.isReady = false
@@ -230,6 +235,14 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
         spec: ExternalCoreMLASRModelSpec
     ) -> URL? {
         SettingsStore.shared.externalCoreMLArtifactsDirectory(for: model) ?? spec.defaultCacheDirectory
+    }
+
+    private static func isAppManagedArtifactsDirectory(
+        _ directory: URL,
+        spec: ExternalCoreMLASRModelSpec
+    ) -> Bool {
+        guard let defaultCacheDirectory = spec.defaultCacheDirectory else { return false }
+        return directory.standardizedFileURL.path == defaultCacheDirectory.standardizedFileURL.path
     }
 
     private static func makeError(_ description: String) -> NSError {

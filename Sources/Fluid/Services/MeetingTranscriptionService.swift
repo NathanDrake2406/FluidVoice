@@ -181,7 +181,9 @@ final class MeetingTranscriptionService: ObservableObject {
                 DebugLogger.shared.warning("Could not determine audio duration: \(error.localizedDescription)", source: "MeetingTranscriptionService")
             }
 
-            if provider.prefersNativeFileTranscription {
+            let isVideoContainer = ["mp4", "mov"].contains(fileExtension)
+
+            if provider.prefersNativeFileTranscription && !isVideoContainer {
                 self.currentStatus = duration > 0 ? "Transcribing audio (\(Int(duration))s)..." : "Transcribing audio..."
                 self.progress = 0.3
 
@@ -216,6 +218,13 @@ final class MeetingTranscriptionService: ObservableObject {
                 self.result = result
                 FileTranscriptionHistoryStore.shared.addEntry(result)
                 return result
+            }
+
+            if provider.prefersNativeFileTranscription && isVideoContainer {
+                DebugLogger.shared.info(
+                    "MeetingTranscriptionService: using buffered transcription path for video container [provider=\(provider.name), extension=\(fileExtension)]",
+                    source: "MeetingTranscriptionService"
+                )
             }
 
             // Transcribe using chunked processing for long files
