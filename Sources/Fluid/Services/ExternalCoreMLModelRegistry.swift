@@ -1,5 +1,6 @@
 import CoreML
 import Foundation
+import FluidAudio
 
 enum ExternalCoreMLASRBackend {
     case cohereTranscribe
@@ -44,11 +45,12 @@ struct ExternalCoreMLASRModelSpec {
     let manifestFileName: String
     let frontendFileName: String
     let encoderFileName: String
+    let crossKVProjectorFileName: String?
     let decoderFileName: String
     let cachedDecoderFileName: String
     let expectedModelID: String
     let expectedSampleRate: Int
-    let computeUnits: MLComputeUnits
+    let computeConfiguration: CohereTranscribeComputeConfiguration
     let sourceURL: URL?
     let repositoryOwner: String?
     let repositoryName: String?
@@ -59,9 +61,11 @@ struct ExternalCoreMLASRModelSpec {
             self.manifestFileName,
             self.frontendFileName,
             self.encoderFileName,
+            self.crossKVProjectorFileName,
             self.decoderFileName,
             self.cachedDecoderFileName,
         ]
+        .compactMap { $0 }
     }
 
     func url(for entry: String, in directory: URL) -> URL {
@@ -129,11 +133,12 @@ enum ExternalCoreMLModelRegistry {
                 manifestFileName: "coreml_manifest.json",
                 frontendFileName: "cohere_frontend.mlpackage",
                 encoderFileName: "cohere_encoder.mlpackage",
+                crossKVProjectorFileName: "cohere_cross_kv_projector.mlpackage",
                 decoderFileName: "cohere_decoder_fullseq_masked.mlpackage",
                 cachedDecoderFileName: "cohere_decoder_cached.mlpackage",
                 expectedModelID: "CohereLabs/cohere-transcribe-03-2026",
                 expectedSampleRate: 16000,
-                computeUnits: .cpuAndGPU,
+                computeConfiguration: .aneSmall,
                 sourceURL: URL(string: "https://huggingface.co/BarathwajAnandan/cohere-transcribe-03-2026-CoreML-6bit"),
                 repositoryOwner: "BarathwajAnandan",
                 repositoryName: "cohere-transcribe-03-2026-CoreML-6bit",

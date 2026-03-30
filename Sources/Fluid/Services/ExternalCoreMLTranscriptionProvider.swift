@@ -54,11 +54,17 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
         case .cohereTranscribe:
             let manager = CohereTranscribeAsrManager()
             progressHandler?(0.9)
+            let computeSummary = [
+                String(describing: spec.computeConfiguration.frontend),
+                String(describing: spec.computeConfiguration.encoder),
+                String(describing: spec.computeConfiguration.crossKV),
+                String(describing: spec.computeConfiguration.decoder),
+            ].joined(separator: "/")
             DebugLogger.shared.info(
-                "ExternalCoreML: loading Cohere models [computeUnits=\(String(describing: spec.computeUnits))]",
+                "ExternalCoreML: loading Cohere models [splitCompute=\(computeSummary)]",
                 source: "ExternalCoreML"
             )
-            try await manager.loadModels(from: directory, computeUnits: spec.computeUnits)
+            try await manager.loadModels(from: directory, computeConfiguration: spec.computeConfiguration)
             self.cohereManager = manager
         }
 
