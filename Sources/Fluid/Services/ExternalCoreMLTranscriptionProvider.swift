@@ -10,6 +10,7 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
     var isAvailable: Bool { true }
     private(set) var isReady: Bool = false
     var prefersNativeFileTranscription: Bool { true }
+    private let streamingPreviewMaxSeconds: Double = 12
 
     private var cohereManager: CohereTranscribeAsrManager?
     private let modelOverride: SettingsStore.SpeechModel?
@@ -81,11 +82,21 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
     }
 
     func transcribeStreaming(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        let previewSamples = self.previewSamples(for: samples)
         DebugLogger.shared.debug(
-            "ExternalCoreML: streaming preview request [samples=\(samples.count)]",
+            "ExternalCoreML: streaming preview request [samples=\(samples.count), previewSamples=\(previewSamples.count)]",
             source: "ExternalCoreML"
         )
-        return try await self.transcribeFinal(samples)
+        guard let manager = self.cohereManager else {
+            DebugLogger.shared.error(
+                "ExternalCoreML: streaming preview requested before manager initialization",
+                source: "ExternalCoreML"
+            )
+            throw Self.makeError("External CoreML model is not initialized.")
+        }
+
+        let text = try await manager.transcribe(audioSamples: previewSamples)
+        return ASRTranscriptionResult(text: text, confidence: 1.0)
     }
 
     func transcribeFile(at fileURL: URL) async throws -> ASRTranscriptionResult {
@@ -257,6 +268,16 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
             code: -1,
             userInfo: [NSLocalizedDescriptionKey: description]
         )
+    }
+
+    private func previewSamples(for samples: [Float]) -> [Float] {
+        let model = self.modelOverride ?? SettingsStore.shared.selectedSpeechModel
+        guard model == .cohereTranscribeSixBit else { return samples }
+
+        let sampleRate = model.externalCoreMLSpec?.expectedSampleRate ?? 16_000
+        let maxPreviewSamples = Int(Double(sampleRate) * self.streamingPreviewMaxSeconds)
+        guard samples.count > maxPreviewSamples else { return samples }
+        return Array(samples.suffix(maxPreviewSamples))
     }
 }
 

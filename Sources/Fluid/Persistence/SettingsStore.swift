@@ -2694,7 +2694,7 @@ final class SettingsStore: ObservableObject {
         var streamingPreviewIntervalSeconds: Double {
             switch self {
             case .cohereTranscribeSixBit:
-                return 2.0
+                return 1.0
             default:
                 return 0.6
             }
@@ -2705,7 +2705,7 @@ final class SettingsStore: ObservableObject {
         var minimumStreamingPreviewSeconds: Double {
             switch self {
             case .cohereTranscribeSixBit:
-                return 2.0
+                return 1.5
             default:
                 return 1.0
             }
