@@ -61,9 +61,14 @@ struct ExternalCoreMLASRModelSpec {
             self.manifestFileName,
             self.frontendFileName,
             self.encoderFileName,
-            self.crossKVProjectorFileName,
             self.decoderFileName,
             self.cachedDecoderFileName,
+        ]
+    }
+
+    var optionalEntries: [String] {
+        [
+            self.crossKVProjectorFileName,
         ]
         .compactMap { $0 }
     }
