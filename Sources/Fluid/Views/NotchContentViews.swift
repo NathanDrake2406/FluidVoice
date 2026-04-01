@@ -22,6 +22,7 @@ class NotchContentState: ObservableObject {
     @Published var isProcessing: Bool = false // AI processing state
     @Published var promptModeOverrideProfileName: String? = nil // Name shown in overlay when prompt mode hotkey is active
     @Published var promptModeOverrideProfileID: String? = nil // ID of the active override profile (for checkmark in menu)
+    @Published var isPromptModeActive: Bool = false // True for the entire prompt-mode session, even when no profile is selected
 
     /// Called when the user picks a different prompt from the overlay during prompt mode recording.
     var onPromptModeProfileChangeRequested: ((SettingsStore.DictationPromptProfile?) -> Void)?
@@ -509,7 +510,7 @@ struct NotchExpandedView: View {
     private func promptMenuContent() -> some View {
         let promptMode = self.activePromptMode ?? .dictate
         // During prompt mode recording, selections update the live override instead of the global prompt.
-        let isInPromptMode = self.contentState.promptModeOverrideProfileName != nil
+        let isInPromptMode = self.contentState.isPromptModeActive
 
         return VStack(alignment: .leading, spacing: 0) {
             Button(action: {

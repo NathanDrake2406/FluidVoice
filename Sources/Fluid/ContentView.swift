@@ -2146,6 +2146,7 @@ struct ContentView: View {
             self.promptModeOverrideText = nil
             NotchContentState.shared.promptModeOverrideProfileName = nil
             NotchContentState.shared.promptModeOverrideProfileID = nil
+            NotchContentState.shared.isPromptModeActive = false
         }
         self.activeRecordingMode = mode
         switch mode {
@@ -2522,6 +2523,7 @@ struct ContentView: View {
                     NotchContentState.shared.promptModeOverrideProfileID = profile.id
                 }
 
+                NotchContentState.shared.isPromptModeActive = true
                 self.setActiveRecordingMode(.promptMode)
                 self.rewriteModeService.clearState()
                 self.menuBarManager.setOverlayMode(.dictation)
