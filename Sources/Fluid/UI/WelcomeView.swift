@@ -709,12 +709,12 @@ struct OnboardingFlowView: View {
             return filtered
         }
         switch self.preferredLanguageChoice {
-            case .englishOnly:
-                return []
-            case .multipleLanguages:
-                return []
-            case .other:
-                return filtered.filter { model in
+        case .englishOnly:
+            return []
+        case .multipleLanguages:
+            return []
+        case .other:
+            return filtered.filter { model in
                 model != .parakeetTDT && model != .parakeetTDTv2 && model != .parakeetRealtime && model != .cohereTranscribeSixBit
             }
         }
@@ -990,8 +990,8 @@ struct OnboardingFlowView: View {
                                         ? "Choose either FluidVoice-recommended English model."
                                         : "Choose either FluidVoice-recommended multilingual model."
                                 )
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
                             } else if self.isRecommendedModelReady {
                                 Label(
                                     "Model downloaded and loaded",

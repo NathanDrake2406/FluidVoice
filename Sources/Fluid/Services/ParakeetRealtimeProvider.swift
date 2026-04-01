@@ -6,7 +6,7 @@ import FluidAudio
 
 /// TranscriptionProvider implementation using FluidAudio's true streaming Parakeet EOU pipeline.
 final class ParakeetRealtimeProvider: TranscriptionProvider {
-    let name = "Parakeet Real-Time (FluidAudio)"
+    let name = "Parakeet Flash (FluidAudio)"
 
     var isAvailable: Bool { true }
 
@@ -143,16 +143,16 @@ final class ParakeetRealtimeProvider: TranscriptionProvider {
 }
 #else
 final class ParakeetRealtimeProvider: TranscriptionProvider {
-    let name = "Parakeet Real-Time (FluidAudio)"
+    let name = "Parakeet Flash (FluidAudio)"
     var isAvailable: Bool { false }
     var isReady: Bool { false }
 
     func prepare(progressHandler: ((Double) -> Void)? = nil) async throws {
-        throw NSError(domain: "ParakeetRealtimeProvider", code: -1, userInfo: [NSLocalizedDescriptionKey: "Parakeet Real-Time requires Apple Silicon"])
+        throw NSError(domain: "ParakeetRealtimeProvider", code: -1, userInfo: [NSLocalizedDescriptionKey: "Parakeet Flash requires Apple Silicon"])
     }
 
     func transcribe(_ samples: [Float]) async throws -> ASRTranscriptionResult {
-        throw NSError(domain: "ParakeetRealtimeProvider", code: -1, userInfo: [NSLocalizedDescriptionKey: "Parakeet Real-Time requires Apple Silicon"])
+        throw NSError(domain: "ParakeetRealtimeProvider", code: -1, userInfo: [NSLocalizedDescriptionKey: "Parakeet Flash requires Apple Silicon"])
     }
 }
 #endif
