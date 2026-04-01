@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 
@@ -65,6 +66,8 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
             models = models.filter { $0.provider == .nvidia }
         case .apple:
             models = models.filter { $0.provider == .apple }
+        case .cohere:
+            models = models.filter { $0.provider == .cohere }
         case .openai:
             models = models.filter { $0.provider == .openai }
         }
@@ -106,6 +109,9 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
                 try await self.asr.ensureAsrReady()
             } catch {
                 DebugLogger.shared.error("Failed to prepare model after activation: \(error)", source: "AISettingsView")
+                self.asr.errorTitle = "Model Activation Failed"
+                self.asr.errorMessage = error.localizedDescription
+                self.asr.showError = true
             }
         }
     }
@@ -197,6 +203,8 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
             return "Parakeet TDT v2 is an English-only model optimized for accuracy and consistency on Apple Silicon."
         case .qwen3Asr:
             return "Qwen3 ASR is a multilingual FluidAudio model with strong quality, but higher memory usage. Requires macOS 15+."
+        case .cohereTranscribeSixBit:
+            return "Cohere Transcribe downloads a CoreML pipeline from Hugging Face and caches it locally. Best on Apple Silicon with 8GB+ RAM."
         default:
             return "Whisper models support 99 languages and work on any Mac."
         }
@@ -207,12 +215,20 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
             try await self.asr.ensureAsrReady()
         } catch {
             DebugLogger.shared.error("Failed to download models: \(error)", source: "AISettingsView")
+            self.asr.errorTitle = "Model Download Failed"
+            self.asr.errorMessage = error.localizedDescription
+            self.asr.showError = true
         }
     }
 
     func deleteModels() async {
         do {
             try await self.asr.clearModelCache()
+            let model = self.settings.selectedSpeechModel
+            if model.requiresExternalArtifacts {
+                self.settings.setExternalCoreMLArtifactsDirectory(nil, for: model)
+                self.asr.resetTranscriptionProvider()
+            }
         } catch {
             DebugLogger.shared.error("Failed to delete models: \(error)", source: "AISettingsView")
         }
@@ -220,5 +236,10 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
 
     func setSelectedSpeechProvider(_ provider: SettingsStore.SpeechModel.Provider) {
         self.selectedSpeechProvider = provider
+    }
+
+    func openExternalModelSource(for model: SettingsStore.SpeechModel) {
+        guard let url = model.externalCoreMLSpec?.sourceURL else { return }
+        NSWorkspace.shared.open(url)
     }
 }

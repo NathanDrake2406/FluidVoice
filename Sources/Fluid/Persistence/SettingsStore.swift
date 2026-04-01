@@ -2332,6 +2332,7 @@ final class SettingsStore: ObservableObject {
         case parakeetTDT = "parakeet-tdt"
         case parakeetTDTv2 = "parakeet-tdt-v2"
         case qwen3Asr = "qwen3-asr"
+        case cohereTranscribeSixBit = "cohere-transcribe-6bit"
 
         // MARK: - Apple Native
 
@@ -2356,6 +2357,7 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDT: return "Parakeet TDT v3 (Multilingual)"
             case .parakeetTDTv2: return "Parakeet TDT v2 (English Only)"
             case .qwen3Asr: return "Qwen3 ASR (Beta)"
+            case .cohereTranscribeSixBit: return "Cohere Transcribe 6-bit"
             case .appleSpeech: return "Apple ASR Legacy"
             case .appleSpeechAnalyzer: return "Apple Speech - macOS 26+"
             case .whisperTiny: return "Whisper Tiny"
@@ -2370,9 +2372,10 @@ final class SettingsStore: ObservableObject {
         var languageSupport: String {
             switch self {
             case .parakeetTDT:
-                return "25 European Languages"
+                return "25 Languages"
             case .parakeetTDTv2: return "English Only (Higher Accuracy)"
             case .qwen3Asr: return "30 Languages"
+            case .cohereTranscribeSixBit: return "14 Languages"
             case .appleSpeech: return "System Languages"
             case .appleSpeechAnalyzer: return "EN, ES, FR, DE, IT, JA, KO, PT, ZH"
             case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
@@ -2385,6 +2388,7 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDT: return "~500 MB"
             case .parakeetTDTv2: return "~500 MB"
             case .qwen3Asr: return "~2.0 GB"
+            case .cohereTranscribeSixBit: return "~1.4 GB"
             case .appleSpeech: return "Built-in (Zero Download)"
             case .appleSpeechAnalyzer: return "Built-in"
             case .whisperTiny: return "~75 MB"
@@ -2398,14 +2402,14 @@ final class SettingsStore: ObservableObject {
 
         var requiresAppleSilicon: Bool {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .qwen3Asr: return true
+            case .parakeetTDT, .parakeetTDTv2, .qwen3Asr, .cohereTranscribeSixBit: return true
             default: return false
             }
         }
 
         var isWhisperModel: Bool {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .qwen3Asr, .appleSpeech, .appleSpeechAnalyzer: return false
+            case .parakeetTDT, .parakeetTDTv2, .qwen3Asr, .cohereTranscribeSixBit, .appleSpeech, .appleSpeechAnalyzer: return false
             default: return true
             }
         }
@@ -2449,7 +2453,7 @@ final class SettingsStore: ObservableObject {
         /// Requires macOS 15 or later.
         var requiresMacOS15: Bool {
             switch self {
-            case .qwen3Asr: return true
+            case .qwen3Asr, .cohereTranscribeSixBit: return true
             default: return false
             }
         }
@@ -2496,6 +2500,7 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDT: return "Blazing Fast - Multilingual"
             case .parakeetTDTv2: return "Blazing Fast - English"
             case .qwen3Asr: return "Qwen3 - Multilingual"
+            case .cohereTranscribeSixBit: return "Cohere - High Accuracy"
             case .appleSpeech: return "Apple ASR Legacy"
             case .appleSpeechAnalyzer: return "Apple Speech - macOS 26+"
             case .whisperTiny: return "Fast & Light"
@@ -2511,11 +2516,16 @@ final class SettingsStore: ObservableObject {
         var cardDescription: String {
             switch self {
             case .parakeetTDT:
-                return "Fast multilingual transcription with 25 languages. Best for everyday use."
+                return "Fast multilingual transcription. Supports Bulgarian, Croatian, Czech, Danish, " +
+                    "Dutch, English, Estonian, Finnish, French, German, Greek, Hungarian, Italian, " +
+                    "Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian, Russian, Slovak, " +
+                    "Slovenian, Spanish, Swedish, and Ukrainian."
             case .parakeetTDTv2:
                 return "Optimized for English accuracy and fastest transcription."
             case .qwen3Asr:
                 return "Qwen3 multilingual ASR via FluidAudio. Higher quality, heavier memory footprint."
+            case .cohereTranscribeSixBit:
+                return "High-accuracy multilingual transcription. Supports English, French, German, Italian, Spanish, Portuguese, Greek, Dutch, Polish, Mandarin, Japanese, Korean, Vietnamese, and Arabic."
             case .appleSpeech:
                 return "Built-in macOS speech recognition. No download required."
             case .appleSpeechAnalyzer:
@@ -2541,6 +2551,8 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDT, .parakeetTDTv2:
                 return 4.0
             case .qwen3Asr:
+                return 8.0
+            case .cohereTranscribeSixBit:
                 return 8.0
             case .appleSpeech, .appleSpeechAnalyzer:
                 return 2.0 // Built-in, minimal overhead
@@ -2581,6 +2593,7 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDT: return 5
             case .parakeetTDTv2: return 5
             case .qwen3Asr: return 3
+            case .cohereTranscribeSixBit: return 3
             case .appleSpeech: return 4
             case .appleSpeechAnalyzer: return 4
             case .whisperTiny: return 4
@@ -2598,6 +2611,7 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDT: return 5
             case .parakeetTDTv2: return 5
             case .qwen3Asr: return 4
+            case .cohereTranscribeSixBit: return 5
             case .appleSpeech: return 4
             case .appleSpeechAnalyzer: return 4
             case .whisperTiny: return 2
@@ -2615,6 +2629,7 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDT: return 1.0
             case .parakeetTDTv2: return 1.0
             case .qwen3Asr: return 0.45
+            case .cohereTranscribeSixBit: return 0.85
             case .appleSpeech: return 0.60
             case .appleSpeechAnalyzer: return 0.85
             case .whisperTiny: return 0.90
@@ -2629,9 +2644,10 @@ final class SettingsStore: ObservableObject {
         /// Exact accuracy percentage (0.0 - 1.0) for the liquid bars
         var accuracyPercent: Double {
             switch self {
-            case .parakeetTDT: return 0.95
-            case .parakeetTDTv2: return 0.98
+            case .parakeetTDT: return 0.92
+            case .parakeetTDTv2: return 0.96
             case .qwen3Asr: return 0.90
+            case .cohereTranscribeSixBit: return 0.98
             case .appleSpeech: return 0.60
             case .appleSpeechAnalyzer: return 0.80
             case .whisperTiny: return 0.40
@@ -2649,6 +2665,7 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDT: return "FluidVoice Pick"
             case .parakeetTDTv2: return "FluidVoice Pick"
             case .qwen3Asr: return "Beta"
+            case .cohereTranscribeSixBit: return "New"
             case .appleSpeechAnalyzer: return "New"
             default: return nil
             }
@@ -2657,7 +2674,7 @@ final class SettingsStore: ObservableObject {
         /// Optimization level for Apple Silicon (for display)
         var appleSiliconOptimized: Bool {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .qwen3Asr, .appleSpeechAnalyzer:
+            case .parakeetTDT, .parakeetTDTv2, .qwen3Asr, .cohereTranscribeSixBit, .appleSpeechAnalyzer:
                 return true
             default:
                 return false
@@ -2675,12 +2692,35 @@ final class SettingsStore: ObservableObject {
             }
         }
 
+        /// Preview update cadence for real-time transcription.
+        /// Models without native incremental decoding should use a slower interval.
+        var streamingPreviewIntervalSeconds: Double {
+            switch self {
+            case .cohereTranscribeSixBit:
+                return 1.0
+            default:
+                return 0.6
+            }
+        }
+
+        /// Minimum audio required before attempting a preview decode.
+        /// Cohere performs better with a slightly larger prefix than the default 1 second.
+        var minimumStreamingPreviewSeconds: Double {
+            switch self {
+            case .cohereTranscribeSixBit:
+                return 1.5
+            default:
+                return 1.0
+            }
+        }
+
         /// Provider category for tab grouping
         enum Provider: String, CaseIterable {
             case nvidia = "NVIDIA"
             case apple = "Apple"
             case openai = "OpenAI"
             case qwen = "Qwen"
+            case cohere = "Cohere"
         }
 
         /// Which provider this model belongs to
@@ -2692,6 +2732,8 @@ final class SettingsStore: ObservableObject {
                 return .apple
             case .qwen3Asr:
                 return .qwen
+            case .cohereTranscribeSixBit:
+                return .cohere
             case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
                 return .openai
             }
@@ -2722,6 +2764,14 @@ final class SettingsStore: ObservableObject {
                 #else
                 return false
                 #endif
+            case .cohereTranscribeSixBit:
+                guard
+                    let spec = self.externalCoreMLSpec,
+                    let directory = SettingsStore.shared.externalCoreMLArtifactsDirectory(for: self)
+                else {
+                    return false
+                }
+                return spec.validateArtifacts(at: directory)
             default:
                 // Whisper models
                 guard let whisperFile = self.whisperModelFile else { return false }
@@ -2751,6 +2801,8 @@ final class SettingsStore: ObservableObject {
                 return "NVIDIA"
             case .qwen3Asr:
                 return "Qwen"
+            case .cohereTranscribeSixBit:
+                return "Cohere"
             case .appleSpeech, .appleSpeechAnalyzer:
                 return "Apple"
             case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
@@ -2773,6 +2825,8 @@ final class SettingsStore: ObservableObject {
                 return "#76B900"
             case .qwen3Asr:
                 return "#E67E22"
+            case .cohereTranscribeSixBit:
+                return "#FA6B3C"
             case .appleSpeech, .appleSpeechAnalyzer:
                 return "#A2AAAD" // Apple Gray
             case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
@@ -2927,6 +2981,7 @@ private extension SettingsStore {
 
         // Unified Speech Model (replaces above two)
         static let selectedSpeechModel = "SelectedSpeechModel"
+        static let externalCoreMLArtifactsDirectories = "ExternalCoreMLArtifactsDirectories"
 
         // Overlay Position
         static let overlayPosition = "OverlayPosition"
@@ -3054,6 +3109,8 @@ extension SettingsStore.SpeechModel {
         switch self {
         case .parakeetTDT:
             return "BG, HR, CS, DA, NL, EN, ET, FI, FR, DE, EL, HU, IT, LV, LT, MT, PL, PT, RO, SK, SL, ES, SV, RU, UK"
+        case .cohereTranscribeSixBit:
+            return "14 Languages"
         case .appleSpeechAnalyzer:
             return "EN, ES, FR, DE, IT, JA, KO, PT, ZH"
         default:
@@ -3108,6 +3165,34 @@ extension SettingsStore {
             objectWillChange.send()
             self.defaults.set(newValue.rawValue, forKey: Keys.selectedSpeechModel)
         }
+    }
+
+    func externalCoreMLArtifactsDirectory(for model: SpeechModel) -> URL? {
+        guard let spec = model.externalCoreMLSpec else { return nil }
+        let paths = self.defaults.dictionary(forKey: Keys.externalCoreMLArtifactsDirectories) as? [String: String] ?? [:]
+        if let storedPath = paths[model.rawValue], storedPath.isEmpty == false {
+            return URL(fileURLWithPath: storedPath, isDirectory: true)
+        }
+
+        let cachesDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        let fallback = cachesDirectory?.appendingPathComponent(spec.artifactFolderHint, isDirectory: true)
+        guard let fallback else { return nil }
+        if FileManager.default.fileExists(atPath: fallback.path) {
+            return fallback
+        }
+        return nil
+    }
+
+    func setExternalCoreMLArtifactsDirectory(_ directory: URL?, for model: SpeechModel) {
+        guard model.requiresExternalArtifacts else { return }
+        objectWillChange.send()
+        var paths = self.defaults.dictionary(forKey: Keys.externalCoreMLArtifactsDirectories) as? [String: String] ?? [:]
+        if let directory {
+            paths[model.rawValue] = directory.standardizedFileURL.path
+        } else {
+            paths.removeValue(forKey: model.rawValue)
+        }
+        self.defaults.set(paths, forKey: Keys.externalCoreMLArtifactsDirectories)
     }
 
     /// Migrates old TranscriptionProviderOption + WhisperModelSize settings to new SpeechModel

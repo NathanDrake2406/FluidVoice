@@ -181,6 +181,52 @@ final class MeetingTranscriptionService: ObservableObject {
                 DebugLogger.shared.warning("Could not determine audio duration: \(error.localizedDescription)", source: "MeetingTranscriptionService")
             }
 
+            let isVideoContainer = ["mp4", "mov"].contains(fileExtension)
+
+            if provider.prefersNativeFileTranscription && !isVideoContainer {
+                self.currentStatus = duration > 0 ? "Transcribing audio (\(Int(duration))s)..." : "Transcribing audio..."
+                self.progress = 0.3
+
+                DebugLogger.shared.info(
+                    "MeetingTranscriptionService: using native file transcription path for provider=\(provider.name)",
+                    source: "MeetingTranscriptionService"
+                )
+
+                let nativeResult = try await provider.transcribeFile(at: fileURL)
+                let processingTime = Date().timeIntervalSince(startTime)
+                let result = TranscriptionResult(
+                    text: nativeResult.text,
+                    confidence: nativeResult.confidence,
+                    duration: duration,
+                    processingTime: processingTime,
+                    fileName: fileURL.lastPathComponent
+                )
+
+                self.currentStatus = "Complete!"
+                self.progress = 1.0
+
+                AnalyticsService.shared.capture(
+                    .meetingTranscriptionCompleted,
+                    properties: [
+                        "success": true,
+                        "file_type": fileURL.pathExtension.lowercased(),
+                        "audio_duration_bucket": AnalyticsBuckets.bucketSeconds(duration),
+                        "processing_time_bucket": AnalyticsBuckets.bucketSeconds(processingTime),
+                    ]
+                )
+
+                self.result = result
+                FileTranscriptionHistoryStore.shared.addEntry(result)
+                return result
+            }
+
+            if provider.prefersNativeFileTranscription && isVideoContainer {
+                DebugLogger.shared.info(
+                    "MeetingTranscriptionService: using buffered transcription path for video container [provider=\(provider.name), extension=\(fileExtension)]",
+                    source: "MeetingTranscriptionService"
+                )
+            }
+
             // Transcribe using chunked processing for long files
             // This reads audio in ~20 minute segments to avoid memory overflow on 3+ hour files
             let chunkDurationSeconds: Double = 20 * 60 // 20 minutes per chunk (well under 24min model limit)
