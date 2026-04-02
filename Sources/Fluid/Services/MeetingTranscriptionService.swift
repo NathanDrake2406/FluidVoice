@@ -2,6 +2,7 @@ import AVFoundation
 import Combine
 import CoreMedia
 import Foundation
+import UniformTypeIdentifiers
 
 /// Result of a transcription operation
 struct TranscriptionResult: Identifiable, Sendable, Codable {
@@ -66,6 +67,29 @@ final class MeetingTranscriptionService: ObservableObject {
     @Published var currentStatus: String = ""
     @Published var error: String?
     @Published var result: TranscriptionResult?
+
+    // MARK: - Supported Formats
+
+    /// File extensions the OS can actually decode, queried dynamically from AVFoundation.
+    /// Filtered to audio/video types only — excludes subtitles, playlists, etc.
+    static let supportedFileExtensions: Set<String> = {
+        let avTypes = AVURLAsset.audiovisualTypes()
+        let extensions = avTypes.compactMap { fileType -> String? in
+            guard let utType = UTType(fileType.rawValue) else { return nil }
+            guard utType.conforms(to: .audio) || utType.conforms(to: .movie) else { return nil }
+            return utType.preferredFilenameExtension
+        }
+        return Set(extensions)
+    }()
+
+    /// Content types accepted by the file picker — broad categories so the OS filters naturally.
+    static let allowedContentTypes: [UTType] = [.audio, .movie]
+
+    /// User-facing description of supported formats (curated for readability).
+    static let supportedFormatsDescription = "Supported: WAV, MP3, M4A, OGG, MP4, MOV, and more"
+
+    /// Error copy shown when a dropped file is not accepted.
+    static let dropErrorCopy = "Accepted file types: WAV, MP3, M4A, OGG, MP4, MOV, and more."
 
     /// Share the ASR service instance to avoid loading models twice
     private let asrService: ASRService
@@ -159,11 +183,10 @@ final class MeetingTranscriptionService: ObservableObject {
 
             // Check file extension
             let fileExtension = fileURL.pathExtension.lowercased()
-            let supportedFormats = ["wav", "mp3", "m4a", "ogg", "aac", "flac", "aiff", "caf", "mp4", "mov"]
 
-            guard supportedFormats.contains(fileExtension) else {
+            guard Self.supportedFileExtensions.contains(fileExtension) else {
                 throw TranscriptionError
-                    .fileNotSupported("Format .\(fileExtension) not supported. Supported: \(supportedFormats.joined(separator: ", "))")
+                    .fileNotSupported("Format .\(fileExtension) not supported. \(Self.supportedFormatsDescription)")
             }
 
             // Get audio duration for progress display
@@ -181,7 +204,8 @@ final class MeetingTranscriptionService: ObservableObject {
                 DebugLogger.shared.warning("Could not determine audio duration: \(error.localizedDescription)", source: "MeetingTranscriptionService")
             }
 
-            let isVideoContainer = ["mp4", "mov"].contains(fileExtension)
+            let isVideoContainer = UTType(filenameExtension: fileExtension)
+                .map { $0.conforms(to: .movie) } ?? false
 
             if provider.prefersNativeFileTranscription && !isVideoContainer {
                 self.currentStatus = duration > 0 ? "Transcribing audio (\(Int(duration))s)..." : "Transcribing audio..."
