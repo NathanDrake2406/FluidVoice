@@ -23,6 +23,7 @@ final class SettingsStore: ObservableObject {
         self.migrateProviderAPIKeysIfNeeded()
         self.scrubSavedProviderAPIKeys()
         self.migrateDictationPromptProfilesIfNeeded()
+        self.migrateLegacyDictationAIPreferenceIfNeeded()
         self.normalizePromptSelectionsIfNeeded()
         self.migrateOverlayBottomOffsetTo50IfNeeded()
     }
@@ -35,9 +36,13 @@ final class SettingsStore: ObservableObject {
         case write // legacy persisted value (decoded as .edit)
         case rewrite // legacy persisted value (decoded as .edit)
 
-        var id: String { self.rawValue }
+        var id: String {
+            self.rawValue
+        }
 
-        static var visiblePromptModes: [PromptMode] { [.dictate, .edit] }
+        static var visiblePromptModes: [PromptMode] {
+            [.dictate, .edit]
+        }
 
         var normalized: PromptMode {
             switch self {
@@ -76,6 +81,12 @@ final class SettingsStore: ObservableObject {
             var container = encoder.singleValueContainer()
             try container.encode(self.normalized.rawValue)
         }
+    }
+
+    enum DictationPromptSelection: Equatable {
+        case off
+        case `default`
+        case profile(String)
     }
 
     struct DictationPromptProfile: Codable, Identifiable, Hashable {
@@ -262,6 +273,38 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    var isDictationPromptOff: Bool {
+        get { self.defaults.bool(forKey: Keys.dictationPromptOff) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.dictationPromptOff)
+        }
+    }
+
+    var dictationPromptSelection: DictationPromptSelection {
+        if self.isDictationPromptOff {
+            return .off
+        }
+        if let promptID = self.selectedDictationPromptID {
+            return .profile(promptID)
+        }
+        return .default
+    }
+
+    func setDictationPromptSelection(_ selection: DictationPromptSelection) {
+        switch selection {
+        case .off:
+            self.isDictationPromptOff = true
+            self.selectedDictationPromptID = nil
+        case .default:
+            self.isDictationPromptOff = false
+            self.selectedDictationPromptID = nil
+        case let .profile(promptID):
+            self.isDictationPromptOff = false
+            self.selectedDictationPromptID = promptID
+        }
+    }
+
     /// Convenience: currently selected profile, or nil if Default/invalid selection.
     var selectedDictationPromptProfile: DictationPromptProfile? {
         self.selectedPromptProfile(for: .dictate)
@@ -326,7 +369,11 @@ final class SettingsStore: ObservableObject {
     func setSelectedPromptID(_ id: String?, for mode: PromptMode) {
         switch mode.normalized {
         case .dictate:
-            self.selectedDictationPromptID = id
+            if let id {
+                self.setDictationPromptSelection(.profile(id))
+            } else {
+                self.setDictationPromptSelection(.default)
+            }
         case .edit:
             self.selectedEditPromptID = id
         case .write, .rewrite:
@@ -723,12 +770,11 @@ final class SettingsStore: ObservableObject {
                 }
             }
 
-            let fallback = self.defaultPromptResolution(
+            return self.defaultPromptResolution(
                 for: normalizedMode,
                 source: .appBindingDefault,
                 appBinding: binding
             )
-            return fallback
         }
 
         if let profile = self.selectedPromptProfile(for: normalizedMode) {
@@ -1234,7 +1280,9 @@ final class SettingsStore: ObservableObject {
         case purple = "Purple"
         case orange = "Orange"
 
-        var id: String { self.rawValue }
+        var id: String {
+            self.rawValue
+        }
 
         var hex: String {
             switch self {
@@ -1254,7 +1302,9 @@ final class SettingsStore: ObservableObject {
         case fluidSfx3 = "fluid_sfx_3"
         case fluidSfx4 = "fluid_sfx_4"
 
-        var id: String { self.rawValue }
+        var id: String {
+            self.rawValue
+        }
 
         var displayName: String {
             switch self {
@@ -1588,6 +1638,52 @@ final class SettingsStore: ObservableObject {
         set {
             objectWillChange.send()
             self.defaults.set(newValue, forKey: Keys.commandModeLinkedToGlobal)
+        }
+    }
+
+    // MARK: - Prompt Mode Settings (Transcribe with Prompt)
+
+    var promptModeShortcutEnabled: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.promptModeShortcutEnabled)
+            return value as? Bool ?? false
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.promptModeShortcutEnabled)
+        }
+    }
+
+    var promptModeHotkeyShortcut: HotkeyShortcut {
+        get {
+            if let data = defaults.data(forKey: Keys.promptModeHotkeyShortcut),
+               let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data)
+            {
+                return shortcut
+            }
+            // Default to Right Shift key (keyCode: 60, no modifiers) — avoids conflict with Command Mode (Right Command, keyCode 54)
+            return HotkeyShortcut(keyCode: 60, modifierFlags: [])
+        }
+        set {
+            objectWillChange.send()
+            if let data = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(data, forKey: Keys.promptModeHotkeyShortcut)
+            }
+        }
+    }
+
+    var promptModeSelectedPromptID: String? {
+        get {
+            let value = self.defaults.string(forKey: Keys.promptModeSelectedPromptID)
+            return value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true ? nil : value
+        }
+        set {
+            objectWillChange.send()
+            if let id = newValue?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+                self.defaults.set(id, forKey: Keys.promptModeSelectedPromptID)
+            } else {
+                self.defaults.removeObject(forKey: Keys.promptModeSelectedPromptID)
+            }
         }
     }
 
@@ -1942,6 +2038,25 @@ final class SettingsStore: ObservableObject {
         DebugLogger.shared.info("Migrated legacy custom dictation prompt to a prompt profile", source: "SettingsStore")
     }
 
+    private func migrateLegacyDictationAIPreferenceIfNeeded() {
+        guard self.defaults.object(forKey: Keys.dictationPromptOff) == nil else { return }
+
+        let hasSelectedCustomDictationPrompt = self.selectedDictationPromptID.flatMap { id in
+            self.dictationPromptProfiles.first(where: { $0.id == id && $0.mode == .dictate })
+        } != nil
+
+        let shouldStartOff: Bool
+        if hasSelectedCustomDictationPrompt {
+            shouldStartOff = false
+        } else if self.defaults.object(forKey: Keys.enableAIProcessing) != nil {
+            shouldStartOff = !self.defaults.bool(forKey: Keys.enableAIProcessing)
+        } else {
+            shouldStartOff = false
+        }
+
+        self.defaults.set(shouldStartOff, forKey: Keys.dictationPromptOff)
+    }
+
     private func normalizePromptSelectionsIfNeeded() {
         // One-time migration to unified edit keys.
         if self.defaults.object(forKey: Keys.selectedEditPromptID) == nil,
@@ -1984,6 +2099,12 @@ final class SettingsStore: ObservableObject {
            self.dictationPromptProfiles.contains(where: { $0.id == id && $0.mode.normalized == .edit }) == false
         {
             self.selectedEditPromptID = nil
+        }
+
+        if let id = self.promptModeSelectedPromptID,
+           self.dictationPromptProfiles.contains(where: { $0.id == id && $0.mode.normalized == .dictate }) == false
+        {
+            self.promptModeSelectedPromptID = nil
         }
 
         let validPromptIDsByMode: [PromptMode: Set<String>] = [
@@ -2323,8 +2444,8 @@ final class SettingsStore: ObservableObject {
     /// Unified speech recognition model selection.
     /// Replaces the old TranscriptionProviderOption + WhisperModelSize dual-setting.
     enum SpeechModel: String, CaseIterable, Identifiable, Codable {
-        // Temporarily disabled in UI/runtime while Parakeet word boosting work is prioritized.
-        // Flip to `true` in a future round to re-enable Qwen without deleting implementation.
+        /// Temporarily disabled in UI/runtime while Parakeet word boosting work is prioritized.
+        /// Flip to `true` in a future round to re-enable Qwen without deleting implementation.
         static let qwenPreviewEnabled = false
 
         // MARK: - FluidAudio Models (Apple Silicon Only)
@@ -2349,7 +2470,9 @@ final class SettingsStore: ObservableObject {
         case whisperLargeTurbo = "whisper-large-turbo" // temporarily disabled in UI
         case whisperLarge = "whisper-large"
 
-        var id: String { rawValue }
+        var id: String {
+            rawValue
+        }
 
         // MARK: - Display Properties
 
@@ -2861,7 +2984,9 @@ final class SettingsStore: ObservableObject {
         case fluidAudio
         case whisper
 
-        var id: String { rawValue }
+        var id: String {
+            rawValue
+        }
 
         var displayName: String {
             switch self {
@@ -2916,9 +3041,10 @@ final class SettingsStore: ObservableObject {
 // swiftlint:enable type_body_length
 
 private extension SettingsStore {
-    // Keys
+    /// Keys
     enum Keys {
         static let enableAIProcessing = "EnableAIProcessing"
+        static let dictationPromptOff = "DictationPromptOff"
         static let enableDebugLogs = "EnableDebugLogs"
         static let availableAIModels = "AvailableAIModels"
         static let availableModelsByProvider = "AvailableModelsByProvider"
@@ -2967,6 +3093,11 @@ private extension SettingsStore {
         static let commandModeLinkedToGlobal = "CommandModeLinkedToGlobal"
         static let commandModeShortcutEnabled = "CommandModeShortcutEnabled"
 
+        // Prompt Mode Keys (Transcribe with Prompt)
+        static let promptModeHotkeyShortcut = "PromptModeHotkeyShortcut"
+        static let promptModeShortcutEnabled = "PromptModeShortcutEnabled"
+        static let promptModeSelectedPromptID = "PromptModeSelectedPromptID"
+
         // Rewrite Mode Keys
         static let rewriteModeHotkeyShortcut = "RewriteModeHotkeyShortcut"
         static let rewriteModeSelectedModel = "RewriteModeSelectedModel"
@@ -2986,7 +3117,7 @@ private extension SettingsStore {
         static let fillerWords = "FillerWords"
         static let removeFillerWordsEnabled = "RemoveFillerWordsEnabled"
 
-        // GAAV Mode (removes capitalization and trailing punctuation)
+        /// GAAV Mode (removes capitalization and trailing punctuation)
         static let gaavModeEnabled = "GAAVModeEnabled"
 
         // Custom Dictionary
@@ -2997,7 +3128,7 @@ private extension SettingsStore {
         static let selectedTranscriptionProvider = "SelectedTranscriptionProvider"
         static let whisperModelSize = "WhisperModelSize"
 
-        // Unified Speech Model (replaces above two)
+        /// Unified Speech Model (replaces above two)
         static let selectedSpeechModel = "SelectedSpeechModel"
         static let selectedCohereLanguage = "SelectedCohereLanguage"
         static let externalCoreMLArtifactsDirectories = "ExternalCoreMLArtifactsDirectories"
@@ -3009,10 +3140,10 @@ private extension SettingsStore {
         static let overlaySize = "OverlaySize"
         static let transcriptionPreviewCharLimit = "TranscriptionPreviewCharLimit"
 
-        // Media Playback Control
+        /// Media Playback Control
         static let pauseMediaDuringTranscription = "PauseMediaDuringTranscription"
 
-        // Custom Dictation Prompt
+        /// Custom Dictation Prompt
         static let customDictationPrompt = "CustomDictationPrompt"
 
         // Dictation Prompt Profiles (multi-prompt system)
@@ -3032,7 +3163,7 @@ private extension SettingsStore {
         static let defaultWritePromptOverride = "DefaultWritePromptOverride" // legacy fallback key
         static let defaultRewritePromptOverride = "DefaultRewritePromptOverride" // legacy fallback key
 
-        // Streak Settings
+        /// Streak Settings
         static let weekendsDontBreakStreak = "WeekendsDontBreakStreak"
     }
 }
@@ -3042,7 +3173,9 @@ extension SettingsStore {
         case standard
         case reliablePaste
 
-        var id: String { self.rawValue }
+        var id: String {
+            self.rawValue
+        }
 
         var displayName: String {
             switch self {
@@ -3099,7 +3232,9 @@ extension SettingsStore {
         case medium = "ggml-medium.bin"
         case large = "ggml-large-v3.bin"
 
-        var id: String { rawValue }
+        var id: String {
+            rawValue
+        }
 
         var displayName: String {
             switch self {

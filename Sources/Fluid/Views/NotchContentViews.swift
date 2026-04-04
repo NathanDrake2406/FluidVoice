@@ -13,22 +13,28 @@ import SwiftUI
 @MainActor
 class NotchContentState: ObservableObject {
     static let shared = NotchContentState()
-    // Keep overlay state bounded even during very long recordings.
+    /// Keep overlay state bounded even during very long recordings.
     private static let maxStoredTranscriptionCharacters = SettingsStore.transcriptionPreviewCharLimitRange.upperBound
 
     @Published var transcriptionText: String = ""
     @Published var mode: OverlayMode = .dictation
     @Published var promptPickerMode: SettingsStore.PromptMode = .dictate
     @Published var isProcessing: Bool = false // AI processing state
+    @Published var promptModeOverrideProfileName: String? = nil // Name shown in overlay when prompt mode hotkey is active
+    @Published var promptModeOverrideProfileID: String? = nil // ID of the active override profile (for checkmark in menu)
+    @Published var isPromptModeActive: Bool = false // True for the entire prompt-mode session, even when no profile is selected
 
-    // Icon of the target app (where text will be typed)
+    /// Called when the user picks a different prompt from the overlay during prompt mode recording.
+    var onPromptModeProfileChangeRequested: ((SettingsStore.DictationPromptProfile?) -> Void)?
+
+    /// Icon of the target app (where text will be typed)
     @Published var targetAppIcon: NSImage?
 
     /// The PID of the app we should restore focus to after interacting with overlays.
     /// Captured at recording start to keep the target stable for the session.
     @Published var recordingTargetPID: pid_t? = nil
 
-    // Cached transcription preview text to avoid recomputing on every render
+    /// Cached transcription preview text to avoid recomputing on every render
     @Published private(set) var cachedPreviewText: String = ""
 
     // MARK: - Expanded Command Output State
@@ -45,7 +51,7 @@ class NotchContentState: ObservableObject {
     @Published var recentChats: [ChatSession] = []
     @Published var currentChatTitle: String = "New Chat"
 
-    // Command output message model
+    /// Command output message model
     struct CommandOutputMessage: Identifiable, Equatable {
         let id = UUID()
         let role: Role
@@ -59,7 +65,7 @@ class NotchContentState: ObservableObject {
         }
     }
 
-    // Callback for submitting follow-up commands from the notch
+    /// Callback for submitting follow-up commands from the notch
     var onSubmitFollowUp: ((String) async -> Void)?
 
     private var cancellables = Set<AnyCancellable>()
@@ -135,8 +141,6 @@ class NotchContentState: ObservableObject {
     var onCopyLastRequested: (() -> Void)?
     /// Called when the user requests undoing AI processing for the latest entry.
     var onUndoLastAIRequested: (() -> Void)?
-    /// Called when the user requests toggling dictation AI enhancement.
-    var onToggleAIProcessingRequested: (() -> Void)?
     /// Called when the user requests opening Preferences.
     var onOpenPreferencesRequested: (() -> Void)?
 
@@ -295,8 +299,8 @@ struct NotchExpandedView: View {
         }
     }
 
-    // ContentView writes transient status strings into transcriptionText while processing
-    // (e.g. "Transcribing...", "Refining..."). Prefer that when present.
+    /// ContentView writes transient status strings into transcriptionText while processing
+    /// (e.g. "Transcribing...", "Refining..."). Prefer that when present.
     private var processingStatusText: String {
         let t = self.contentState.transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? self.processingLabel : t
@@ -306,7 +310,7 @@ struct NotchExpandedView: View {
         !self.contentState.transcriptionText.isEmpty
     }
 
-    // Check if there's command history that can be expanded
+    /// Check if there's command history that can be expanded
     private var canExpandCommandHistory: Bool {
         self.contentState.mode == .command && !self.contentState.commandConversationHistory.isEmpty
     }
@@ -343,6 +347,12 @@ struct NotchExpandedView: View {
 
     private var isAppPromptOverrideActive: Bool {
         guard let activePromptMode else { return false }
+        if activePromptMode.normalized == .dictate &&
+            self.settings.isDictationPromptOff &&
+            !self.contentState.isPromptModeActive
+        {
+            return false
+        }
         return self.settings.hasAppPromptBinding(
             for: activePromptMode,
             appBundleID: self.promptResolutionBundleID
@@ -350,7 +360,16 @@ struct NotchExpandedView: View {
     }
 
     private var selectedPromptLabel: String {
+        if let overrideName = self.contentState.promptModeOverrideProfileName {
+            return overrideName
+        }
         guard let activePromptMode else { return "N/A" }
+        if activePromptMode.normalized == .dictate &&
+            self.settings.isDictationPromptOff &&
+            !self.contentState.isPromptModeActive
+        {
+            return "Off"
+        }
         if let profile = self.settings.resolvedPromptProfile(
             for: activePromptMode,
             appBundleID: self.promptResolutionBundleID
@@ -384,10 +403,46 @@ struct NotchExpandedView: View {
 
     private func promptMenuContent() -> some View {
         let promptMode = self.activePromptMode ?? .dictate
+        // During prompt mode recording, selections update the live override instead of the global prompt.
+        let isInPromptMode = self.contentState.isPromptModeActive
 
         return VStack(alignment: .leading, spacing: 0) {
+            if promptMode.normalized == .dictate && !isInPromptMode {
+                Button(action: {
+                    self.settings.setDictationPromptSelection(.off)
+                    let pid = NotchContentState.shared.recordingTargetPID
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        if let pid { _ = TypingService.activateApp(pid: pid) }
+                    }
+                    self.showPromptHoverMenu = false
+                }) {
+                    HStack {
+                        Text("Off")
+                        Spacer()
+                        let isSelected = !isInPromptMode && self.settings.isDictationPromptOff
+                        if isSelected {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 4)
+
+                Divider()
+                    .padding(.vertical, 4)
+            }
+
             Button(action: {
-                self.settings.setSelectedPromptID(nil, for: promptMode)
+                if isInPromptMode {
+                    self.contentState.onPromptModeProfileChangeRequested?(nil)
+                } else {
+                    if promptMode.normalized == .dictate {
+                        self.settings.setDictationPromptSelection(.default)
+                    } else {
+                        self.settings.setSelectedPromptID(nil, for: promptMode)
+                    }
+                }
                 let pid = NotchContentState.shared.recordingTargetPID
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                     if let pid { _ = TypingService.activateApp(pid: pid) }
@@ -397,7 +452,10 @@ struct NotchExpandedView: View {
                 HStack {
                     Text("Default")
                     Spacer()
-                    if self.settings.selectedPromptID(for: promptMode) == nil {
+                    let isSelected = isInPromptMode
+                        ? (self.contentState.promptModeOverrideProfileID == nil)
+                        : (!self.settings.isDictationPromptOff && self.settings.selectedPromptID(for: promptMode) == nil)
+                    if isSelected {
                         Image(systemName: "checkmark")
                             .font(.system(size: 10, weight: .semibold))
                     }
@@ -412,7 +470,11 @@ struct NotchExpandedView: View {
 
                 ForEach(self.settings.promptProfiles(for: promptMode)) { profile in
                     Button(action: {
-                        self.settings.setSelectedPromptID(profile.id, for: promptMode)
+                        if isInPromptMode {
+                            self.contentState.onPromptModeProfileChangeRequested?(profile)
+                        } else {
+                            self.settings.setSelectedPromptID(profile.id, for: promptMode)
+                        }
                         let pid = NotchContentState.shared.recordingTargetPID
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                             if let pid { _ = TypingService.activateApp(pid: pid) }
@@ -422,7 +484,10 @@ struct NotchExpandedView: View {
                         HStack {
                             Text(profile.name.isEmpty ? "Untitled" : profile.name)
                             Spacer()
-                            if self.settings.selectedPromptID(for: promptMode) == profile.id {
+                            let isSelected = isInPromptMode
+                                ? (self.contentState.promptModeOverrideProfileID == profile.id)
+                                : (self.settings.selectedPromptID(for: promptMode) == profile.id)
+                            if isSelected {
                                 Image(systemName: "checkmark")
                                     .font(.system(size: 10, weight: .semibold))
                             }
@@ -433,8 +498,10 @@ struct NotchExpandedView: View {
                 }
             }
         }
+        .font(.system(size: 9, weight: .medium))
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
+        .foregroundStyle(.white)
         .background(Color.black)
         .cornerRadius(8)
         .overlay(
@@ -510,8 +577,9 @@ struct NotchExpandedView: View {
                     .background(Color.white.opacity(0.00))
                     .cornerRadius(6)
                     .opacity(self.isPromptSelectableMode ? 1.0 : 0.6)
-                    .onHover { hovering in
-                        self.handlePromptHover(hovering)
+                    .onTapGesture {
+                        guard self.isPromptSelectableMode, !self.contentState.isProcessing else { return }
+                        self.showPromptHoverMenu.toggle()
                     }
 
                     if self.showPromptHoverMenu {
@@ -558,6 +626,7 @@ struct NotchExpandedView: View {
                 }
             }
         }
+        .frame(width: 216) // Fixed width prevents notch from resizing and causing edge artifacts
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(Color.black) // Must be pure black to blend with macOS notch
@@ -752,7 +821,7 @@ struct NotchCommandOutputExpandedView: View {
         70
     }
 
-    // Dynamic height based on content (max half screen)
+    /// Dynamic height based on content (max half screen)
     private var dynamicHeight: CGFloat {
         let baseHeight: CGFloat = 120 // Minimum height
         let contentHeight = self.estimateContentHeight()

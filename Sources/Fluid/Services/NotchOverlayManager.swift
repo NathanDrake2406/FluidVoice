@@ -32,13 +32,13 @@ final class NotchOverlayManager {
     >?
     private var currentMode: OverlayMode = .dictation
 
-    // Store last audio publisher for re-showing during processing
+    /// Store last audio publisher for re-showing during processing
     private var lastAudioPublisher: AnyPublisher<CGFloat, Never>?
 
-    // Current audio publisher (can be updated for expanded notch recording)
+    /// Current audio publisher (can be updated for expanded notch recording)
     @Published private(set) var currentAudioPublisher: AnyPublisher<CGFloat, Never>?
 
-    // State machine to prevent race conditions
+    /// State machine to prevent race conditions
     private enum State {
         case idle
         case showing
@@ -49,10 +49,10 @@ final class NotchOverlayManager {
     private var state: State = .idle
     private var commandOutputState: State = .idle
 
-    // Track if expanded command output is showing
+    /// Track if expanded command output is showing
     private(set) var isCommandOutputExpanded: Bool = false
 
-    // Track if bottom overlay is visible
+    /// Track if bottom overlay is visible
     private(set) var isBottomOverlayVisible: Bool = false
 
     // Callbacks for command output interaction
@@ -70,7 +70,7 @@ final class NotchOverlayManager {
     private var generation: UInt64 = 0
     private var commandOutputGeneration: UInt64 = 0
 
-    // Track pending retry task for cancellation
+    /// Track pending retry task for cancellation
     private var pendingRetryTask: Task<Void, Never>?
 
     // Escape key monitors for dismissing notch

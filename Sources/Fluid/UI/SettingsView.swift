@@ -11,7 +11,10 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var appServices: AppServices
-    private var asr: ASRService { self.appServices.asr }
+    private var asr: ASRService {
+        self.appServices.asr
+    }
+
     @Environment(\.theme) private var theme
     @ObservedObject private var settings = SettingsStore.shared
     @Binding var appear: Bool
@@ -23,6 +26,9 @@ struct SettingsView: View {
     @Binding var accessibilityEnabled: Bool
     @Binding var hotkeyShortcut: HotkeyShortcut
     @Binding var isRecordingShortcut: Bool
+    @Binding var promptModeShortcut: HotkeyShortcut
+    @Binding var isRecordingPromptModeShortcut: Bool
+    @Binding var promptModeShortcutEnabled: Bool
     @Binding var commandModeShortcut: HotkeyShortcut
     @Binding var isRecordingCommandModeShortcut: Bool
     @Binding var rewriteShortcut: HotkeyShortcut
@@ -449,11 +455,13 @@ struct SettingsView: View {
                                     .frame(width: 8, height: 8)
 
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(self.asr.micStatus == .authorized ? "Microphone access granted" :
-                                        self.asr.micStatus == .denied ? "Microphone access denied" :
-                                        "Microphone access not determined")
-                                        .font(.body)
-                                        .foregroundStyle(self.asr.micStatus == .authorized ? .primary : self.theme.palette.warning)
+                                    Text(
+                                        self.asr.micStatus == .authorized ? "Microphone access granted" :
+                                            self.asr.micStatus == .denied ? "Microphone access denied" :
+                                            "Microphone access not determined"
+                                    )
+                                    .font(.body)
+                                    .foregroundStyle(self.asr.micStatus == .authorized ? .primary : self.theme.palette.warning)
 
                                     if self.asr.micStatus != .authorized {
                                         Text("Microphone access is required for voice recording")
@@ -568,6 +576,54 @@ struct SettingsView: View {
                                             self.isRecordingShortcut = true
                                         }
                                     )
+                                    Divider().opacity(0.2).padding(.vertical, 4)
+
+                                    self.shortcutRow(
+                                        icon: "text.bubble.fill",
+                                        iconColor: .secondary,
+                                        title: "Transcribe with Prompt",
+                                        description: "Dictate with a specific AI prompt",
+                                        shortcut: self.promptModeShortcut,
+                                        isRecording: self.isRecordingPromptModeShortcut,
+                                        isEnabled: self.$promptModeShortcutEnabled,
+                                        onChangePressed: {
+                                            DebugLogger.shared.debug("Starting to record new prompt mode shortcut", source: "SettingsView")
+                                            self.isRecordingPromptModeShortcut = true
+                                        }
+                                    )
+
+                                    if self.promptModeShortcutEnabled {
+                                        let profiles = self.settings.promptProfiles(for: .dictate)
+                                        if !profiles.isEmpty {
+                                            HStack {
+                                                Text("Prompt")
+                                                    .font(.subheadline)
+                                                    .foregroundStyle(.secondary)
+                                                    .padding(.leading, 30)
+                                                Spacer()
+                                                Picker("", selection: Binding(
+                                                    get: { self.settings.promptModeSelectedPromptID ?? "" },
+                                                    set: { newValue in
+                                                        self.settings.promptModeSelectedPromptID = newValue.isEmpty ? nil : newValue
+                                                    }
+                                                )) {
+                                                    Text("Select a prompt...").tag("")
+                                                    ForEach(profiles) { profile in
+                                                        Text(profile.name.isEmpty ? "Untitled" : profile.name).tag(profile.id)
+                                                    }
+                                                }
+                                                .frame(width: 170)
+                                            }
+                                            .padding(.bottom, 4)
+                                        } else {
+                                            Text("Add prompts in AI Enhancements → Prompt Profiles")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .padding(.leading, 30)
+                                                .padding(.bottom, 4)
+                                        }
+                                    }
+
                                     Divider().opacity(0.2).padding(.vertical, 4)
 
                                     self.shortcutRow(
@@ -1346,7 +1402,6 @@ struct SettingsView: View {
 
     // MARK: - Helper Views
 
-    @ViewBuilder
     private func settingsToggleRow(
         title: String,
         description: String,
@@ -1379,7 +1434,6 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
     private func optionToggleRow(
         title: String,
         description: String,
@@ -1403,7 +1457,6 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
     private func instructionsBox(
         title: String,
         steps: [String],
@@ -1489,17 +1542,23 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(.orange.opacity(0.2)))
+                        .background(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(.orange.opacity(0.2))
+                        )
                 } else {
                     Text(shortcut.displayString)
                         .font(.caption.monospaced().weight(.medium))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(.quaternary.opacity(0.5))
-                            .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .stroke(.primary.opacity(0.15), lineWidth: 1)))
+                        .background(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(.quaternary.opacity(0.5))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                        .stroke(.primary.opacity(0.15), lineWidth: 1)
+                                )
+                        )
                 }
 
                 Button("Change") {
@@ -1543,8 +1602,10 @@ struct FillerWordsEditor: View {
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(.quaternary))
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(.quaternary)
+                    )
                 }
             }
 

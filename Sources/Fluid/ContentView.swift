@@ -41,6 +41,7 @@ struct ContentView: View {
     private enum ActiveRecordingMode: String {
         case none
         case dictate
+        case promptMode
         case edit
         case command
     }
@@ -57,11 +58,17 @@ struct ContentView: View {
     @EnvironmentObject private var menuBarManager: MenuBarManager
     @ObservedObject private var settings = SettingsStore.shared
 
-    // Computed properties to access shared services from AppServices container
-    // This maintains backward compatibility with the existing code while
-    // removing the duplicate service instances that cause startup crashes.
-    private var asr: ASRService { self.appServices.asr }
-    private var audioObserver: AudioHardwareObserver { self.appServices.audioObserver }
+    /// Computed properties to access shared services from AppServices container
+    /// This maintains backward compatibility with the existing code while
+    /// removing the duplicate service instances that cause startup crashes.
+    private var asr: ASRService {
+        self.appServices.asr
+    }
+
+    private var audioObserver: AudioHardwareObserver {
+        self.appServices.audioObserver
+    }
+
     @Environment(\.theme) private var theme
     @State private var hotkeyManager: GlobalHotkeyManager? = nil
     @State private var hotkeyManagerInitialized: Bool = false
@@ -69,15 +76,19 @@ struct ContentView: View {
     @State private var appear = false
     @State private var accessibilityEnabled = false
     @State private var hotkeyShortcut: HotkeyShortcut = SettingsStore.shared.hotkeyShortcut
+    @State private var promptModeHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.promptModeHotkeyShortcut
     @State private var commandModeHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.commandModeHotkeyShortcut
     @State private var rewriteModeHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.rewriteModeHotkeyShortcut
+    @State private var isPromptModeShortcutEnabled: Bool = SettingsStore.shared.promptModeShortcutEnabled
     @State private var isCommandModeShortcutEnabled: Bool = SettingsStore.shared.commandModeShortcutEnabled
     @State private var aiSettingsExpanded: Bool = true
     @State private var isRewriteModeShortcutEnabled: Bool = SettingsStore.shared.rewriteModeShortcutEnabled
     @State private var isRecordingForRewrite: Bool = false // Track if current recording is for rewrite mode
     @State private var isRecordingForCommand: Bool = false // Track if current recording is for command mode
+    @State private var promptModeOverrideText: String? // System prompt text to use when in prompt mode
     @State private var activeRecordingMode: ActiveRecordingMode = .none
     @State private var isRecordingShortcut = false
+    @State private var isRecordingPromptModeShortcut = false
     @State private var isRecordingCommandModeShortcut = false
     @State private var isRecordingRewriteShortcut = false
     @State private var pendingModifierFlags: NSEvent.ModifierFlags = []
@@ -356,7 +367,7 @@ struct ContentView: View {
                 let eventModifiers = event.modifierFlags.intersection([.function, .command, .option, .control, .shift])
                 let shortcutModifiers = self.hotkeyShortcut.modifierFlags.intersection([.function, .command, .option, .control, .shift])
 
-                let isRecordingAnyShortcut = self.isRecordingShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut
+                let isRecordingAnyShortcut = self.isRecordingShortcut || self.isRecordingPromptModeShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut
 
                 if event.type == .keyDown {
                     if event.keyCode == self.hotkeyShortcut.keyCode && eventModifiers == shortcutModifiers {
@@ -406,6 +417,7 @@ struct ContentView: View {
                     if keyCode == 53 {
                         DebugLogger.shared.debug("NSEvent monitor: Escape pressed, cancelling shortcut recording", source: "ContentView")
                         self.isRecordingShortcut = false
+                        self.isRecordingPromptModeShortcut = false
                         self.isRecordingCommandModeShortcut = false
                         self.isRecordingRewriteShortcut = false
                         self.resetPendingShortcutState()
@@ -421,6 +433,11 @@ struct ContentView: View {
                         SettingsStore.shared.rewriteModeHotkeyShortcut = newShortcut
                         self.hotkeyManager?.updateRewriteModeShortcut(newShortcut)
                         self.isRecordingRewriteShortcut = false
+                    } else if self.isRecordingPromptModeShortcut {
+                        self.promptModeHotkeyShortcut = newShortcut
+                        SettingsStore.shared.promptModeHotkeyShortcut = newShortcut
+                        self.hotkeyManager?.updatePromptModeShortcut(newShortcut)
+                        self.isRecordingPromptModeShortcut = false
                     } else if self.isRecordingCommandModeShortcut {
                         self.commandModeHotkeyShortcut = newShortcut
                         SettingsStore.shared.commandModeHotkeyShortcut = newShortcut
@@ -459,6 +476,11 @@ struct ContentView: View {
                                 SettingsStore.shared.rewriteModeHotkeyShortcut = newShortcut
                                 self.hotkeyManager?.updateRewriteModeShortcut(newShortcut)
                                 self.isRecordingRewriteShortcut = false
+                            } else if self.isRecordingPromptModeShortcut {
+                                self.promptModeHotkeyShortcut = newShortcut
+                                SettingsStore.shared.promptModeHotkeyShortcut = newShortcut
+                                self.hotkeyManager?.updatePromptModeShortcut(newShortcut)
+                                self.isRecordingPromptModeShortcut = false
                             } else if self.isRecordingCommandModeShortcut {
                                 self.commandModeHotkeyShortcut = newShortcut
                                 SettingsStore.shared.commandModeHotkeyShortcut = newShortcut
@@ -518,6 +540,22 @@ struct ContentView: View {
         }
         .onChange(of: self.selectedProviderID) { _, newValue in
             SettingsStore.shared.selectedProviderID = newValue
+        }
+        .onChange(of: self.isPromptModeShortcutEnabled) { newValue in
+            SettingsStore.shared.promptModeShortcutEnabled = newValue
+            self.hotkeyManager?.updatePromptModeShortcutEnabled(newValue)
+
+            if !newValue {
+                self.isRecordingPromptModeShortcut = false
+
+                if self.activeRecordingMode == .promptMode {
+                    if self.asr.isRunning {
+                        Task { await self.asr.stopWithoutTranscription() }
+                    }
+                    self.clearActiveRecordingMode()
+                    self.menuBarManager.setOverlayMode(.dictation)
+                }
+            }
         }
         .onChange(of: self.isCommandModeShortcutEnabled) { newValue in
             SettingsStore.shared.commandModeShortcutEnabled = newValue
@@ -622,15 +660,11 @@ struct ContentView: View {
             }
         }
         .onDisappear {
-            NotchContentState.shared.onPromptModeSwitchRequested = nil
-            NotchContentState.shared.onOverlayModeSwitchRequested = nil
-            NotchContentState.shared.onReprocessLastRequested = nil
-            NotchContentState.shared.onCopyLastRequested = nil
-            NotchContentState.shared.onUndoLastAIRequested = nil
-            NotchContentState.shared.onToggleAIProcessingRequested = nil
-            NotchContentState.shared.onOpenPreferencesRequested = nil
             Task { await self.asr.stopWithoutTranscription() }
             // Note: Overlay lifecycle is now managed by MenuBarManager
+            // Note: NotchContentState handlers capture self (a struct value copy) and are
+            // intentionally kept alive so the overlay remains fully functional when the
+            // settings window is closed. No retain cycle risk since ContentView is a value type.
 
             // Stop accessibility polling
             self.accessibilityPollingTask?.cancel()
@@ -950,7 +984,7 @@ struct ContentView: View {
             accessibilityEnabled: self.accessibilityEnabled,
             markAISkipped: {
                 self.settings.onboardingAISkipped = true
-                self.menuBarManager.setAIProcessingEnabled(false)
+                self.settings.setDictationPromptSelection(.off)
             },
             markPlaygroundValidated: {
                 self.settings.onboardingPlaygroundValidated = true
@@ -1101,6 +1135,9 @@ struct ContentView: View {
             accessibilityEnabled: self.$accessibilityEnabled,
             hotkeyShortcut: self.$hotkeyShortcut,
             isRecordingShortcut: self.$isRecordingShortcut,
+            promptModeShortcut: self.$promptModeHotkeyShortcut,
+            isRecordingPromptModeShortcut: self.$isRecordingPromptModeShortcut,
+            promptModeShortcutEnabled: self.$isPromptModeShortcutEnabled,
             commandModeShortcut: self.$commandModeHotkeyShortcut,
             isRecordingCommandModeShortcut: self.$isRecordingCommandModeShortcut,
             rewriteShortcut: self.$rewriteModeHotkeyShortcut,
@@ -1173,7 +1210,9 @@ struct ContentView: View {
 
     // MARK: - Model Management Functions
 
-    private func saveModels() { SettingsStore.shared.availableModels = self.availableModels }
+    private func saveModels() {
+        SettingsStore.shared.availableModels = self.availableModels
+    }
 
     // MARK: - Provider Management Functions
 
@@ -1458,13 +1497,20 @@ struct ContentView: View {
 
         DebugLogger.shared.debug("processTextWithAI using provider=\(derivedCurrentProvider), model=\(derivedSelectedModel)", source: "ContentView")
 
+        // Resolve the effective system prompt once so every provider path
+        // honors transient overrides such as "Transcribe with Prompt".
+        let appInfo = self.recordingAppInfo ?? self.getCurrentAppInfo()
+        let systemPrompt: String = {
+            let override = overrideSystemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !override.isEmpty { return override }
+            return self.buildSystemPrompt(appInfo: appInfo)
+        }()
+
         // Route to Apple Intelligence if selected
         if currentSelectedProviderID == "apple-intelligence" {
             #if canImport(FoundationModels)
             if #available(macOS 26.0, *) {
                 let provider = AppleIntelligenceProvider()
-                let appInfo = self.recordingAppInfo ?? self.getCurrentAppInfo()
-                let systemPrompt = self.buildSystemPrompt(appInfo: appInfo)
                 if self.shouldTracePromptProcessing {
                     let selectedProfile = SettingsStore.shared.resolvedPromptProfile(
                         for: .dictate,
@@ -1507,13 +1553,6 @@ struct ContentView: View {
             }
         }
 
-        // Get app context captured at start of recording if available
-        let appInfo = self.recordingAppInfo ?? self.getCurrentAppInfo()
-        let systemPrompt: String = {
-            let override = overrideSystemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !override.isEmpty { return override }
-            return self.buildSystemPrompt(appInfo: appInfo)
-        }()
         DebugLogger.shared.debug("Using app context for AI: app=\(appInfo.name), bundleId=\(appInfo.bundleId), title=\(appInfo.windowTitle)", source: "ContentView")
         if self.shouldTracePromptProcessing {
             let selectedProfile = SettingsStore.shared.resolvedPromptProfile(
@@ -1629,6 +1668,7 @@ struct ContentView: View {
         let modeAtStop = self.activeRecordingMode
         let wasRewriteMode = modeAtStop == .edit || self.isRecordingForRewrite
         let wasCommandMode = modeAtStop == .command || self.isRecordingForCommand
+        let promptOverride = self.promptModeOverrideText
         DebugLogger.shared.info(
             "Routing decision snapshot | activeMode=\(modeAtStop.rawValue) | rewrite=\(wasRewriteMode) | command=\(wasCommandMode) | overlay=\(NotchContentState.shared.mode.rawValue)",
             source: "ContentView"
@@ -1668,8 +1708,8 @@ struct ContentView: View {
             promptTest.lastOutputText = ""
             promptTest.lastError = ""
 
-            guard DictationAIPostProcessingGate.isConfigured() else {
-                promptTest.lastError = "AI post-processing is not configured. Enable AI Enhancement and configure a provider/model (and API key for non-local endpoints)."
+            guard DictationAIPostProcessingGate.isProviderConfigured() else {
+                promptTest.lastError = "AI post-processing is not configured. Configure a provider/model (and API key for non-local endpoints) to test prompts."
                 self.menuBarManager.setProcessing(false)
                 return
             }
@@ -1720,8 +1760,10 @@ struct ContentView: View {
 
         var finalText: String
 
-        // Check if we should use AI processing
-        let shouldUseAI = DictationAIPostProcessingGate.isConfigured()
+        // Check if we should use AI processing.
+        // Prompt mode can still use AI when a provider is configured even if the global gate is off.
+        let shouldUseAI = DictationAIPostProcessingGate.isConfigured() ||
+            (promptOverride != nil && DictationAIPostProcessingGate.isProviderConfigured())
         let transcriptionModelInfo = self.currentTranscriptionModelInfo()
 
         if shouldUseAI {
@@ -1736,7 +1778,7 @@ struct ContentView: View {
             // Ensure the status label becomes visible immediately.
             await Task.yield()
 
-            finalText = await self.processTextWithAI(transcribedText)
+            finalText = await self.processTextWithAI(transcribedText, overrideSystemPrompt: promptOverride)
             let postProcessingLatencyMs = Int((Date().timeIntervalSince(postProcessingStart) * 1000).rounded())
             AnalyticsService.shared.capture(
                 .dictationPostProcessingCompleted,
@@ -1883,7 +1925,7 @@ struct ContentView: View {
         let onboardingPlaygroundStep = 4
         let isOnboardingPlayground = !self.settings.onboardingCompleted &&
             self.settings.onboardingCurrentStep == onboardingPlaygroundStep
-        let isDictationMode = self.activeRecordingMode == .dictate
+        let isDictationMode = self.activeRecordingMode == .dictate || self.activeRecordingMode == .promptMode
 
         if isOnboardingPlayground && isDictationMode {
             return .onboardingSandbox
@@ -2128,9 +2170,15 @@ struct ContentView: View {
     }
 
     private func setActiveRecordingMode(_ mode: ActiveRecordingMode) {
+        if mode != .promptMode {
+            self.promptModeOverrideText = nil
+            NotchContentState.shared.promptModeOverrideProfileName = nil
+            NotchContentState.shared.promptModeOverrideProfileID = nil
+            NotchContentState.shared.isPromptModeActive = false
+        }
         self.activeRecordingMode = mode
         switch mode {
-        case .none, .dictate:
+        case .none, .dictate, .promptMode:
             self.isRecordingForCommand = false
             self.isRecordingForRewrite = false
         case .edit:
@@ -2216,7 +2264,7 @@ struct ContentView: View {
         DebugLogger.shared.info("Command processed, conversation stored in Command Mode", source: "ContentView")
     }
 
-    // Capture app context at start to avoid mismatches if the user switches apps mid-session
+    /// Capture app context at start to avoid mismatches if the user switches apps mid-session
     private func startRecording() {
         let model = SettingsStore.shared.selectedSpeechModel
         DebugLogger.shared.info(
@@ -2348,146 +2396,6 @@ struct ContentView: View {
         self.newModelName = ""
     }
 
-    // MARK: - OpenAI-compatible call for playground
-
-    private func callOpenAIChat() async {
-        guard !self.isCallingAI else { return }
-        await MainActor.run { self.isCallingAI = true }
-        defer { Task { await MainActor.run { isCallingAI = false } } }
-
-        let result = await processTextWithAI(aiInputText)
-        await MainActor.run { self.aiOutputText = result }
-    }
-
-    private func getModelStatusText() -> String {
-        if self.asr.isLoadingModel {
-            return "Loading model into memory... (30-60 sec)"
-        } else if self.asr.isDownloadingModel {
-            return "Downloading model... Please wait."
-        } else if self.asr.isAsrReady {
-            return "Model is ready to use!"
-        } else if self.asr.modelsExistOnDisk {
-            return "Model cached. Will load on first use."
-        } else {
-            return "Model will download when needed."
-        }
-    }
-
-    private var onboardingVoiceModelReady: Bool {
-        self.asr.isAsrReady || self.asr.modelsExistOnDisk || SettingsStore.shared.selectedSpeechModel.isInstalled
-    }
-
-    private var onboardingMicrophoneReady: Bool {
-        self.asr.micStatus == .authorized
-    }
-
-    private var onboardingAccessibilityReady: Bool {
-        self.accessibilityEnabled
-    }
-
-    private var onboardingAIReady: Bool {
-        self.settings.onboardingAISkipped || DictationAIPostProcessingGate.isConfigured()
-    }
-
-    private var onboardingPlaygroundReady: Bool {
-        self.settings.onboardingPlaygroundValidated
-    }
-
-    private var canCompleteOnboarding: Bool {
-        self.onboardingVoiceModelReady &&
-            self.onboardingMicrophoneReady &&
-            self.onboardingAccessibilityReady &&
-            self.onboardingAIReady &&
-            self.onboardingPlaygroundReady
-    }
-
-    @MainActor
-    private func completeOnboardingIfPossible() {
-        guard self.canCompleteOnboarding else { return }
-
-        self.settings.onboardingCompleted = true
-
-        let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
-        self.selectedSidebarItem = isOnboarded ? .preferences : .welcome
-    }
-
-    private func labelFor(status: AVAuthorizationStatus) -> String {
-        switch status {
-        case .authorized: return "Microphone: Authorized"
-        case .denied: return "Microphone: Denied"
-        case .restricted: return "Microphone: Restricted"
-        case .notDetermined: return "Microphone: Not Determined"
-        @unknown default: return "Microphone: Unknown"
-        }
-    }
-
-    private func checkAccessibilityPermissions() -> Bool {
-        return AXIsProcessTrusted()
-    }
-
-    private func openAccessibilitySettings() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
-        self.didOpenAccessibilityPane = true
-        UserDefaults.standard.set(true, forKey: self.accessibilityRestartFlagKey)
-    }
-
-    private func restartApp() {
-        let appPath = Bundle.main.bundlePath
-        let process = Process()
-        process.launchPath = "/usr/bin/open"
-        process.arguments = ["-n", appPath]
-        // Clear pending flag and hide prompt before restarting
-        UserDefaults.standard.set(false, forKey: self.accessibilityRestartFlagKey)
-        self.showRestartPrompt = false
-        try? process.run()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            NSApp.terminate(nil)
-        }
-    }
-
-    private func startAccessibilityPolling() {
-        // Don't poll if already enabled or if we've already auto-restarted once
-        guard !self.accessibilityEnabled else { return }
-        guard !UserDefaults.standard.bool(forKey: self.hasAutoRestartedForAccessibilityKey) else { return }
-
-        // Cancel any existing polling task
-        self.accessibilityPollingTask?.cancel()
-
-        // Start background polling
-        self.accessibilityPollingTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000) // Poll every 2 seconds
-
-                // Check if permission was granted
-                let nowTrusted = AXIsProcessTrusted()
-                if nowTrusted && !self.accessibilityEnabled {
-                    await MainActor.run {
-                        DebugLogger.shared.info("Accessibility permission granted! Auto-restarting app...", source: "ContentView")
-
-                        // Mark that we've auto-restarted to prevent loops
-                        UserDefaults.standard.set(true, forKey: self.hasAutoRestartedForAccessibilityKey)
-
-                        // Give user brief moment to see any UI feedback
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                            self.restartApp()
-                        }
-                    }
-                    break // Stop polling after triggering restart
-                }
-            }
-        }
-    }
-
-    private func revealAppInFinder() {
-        let appPath = Bundle.main.bundlePath
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: appPath)])
-    }
-
-    private func openApplicationsFolder() {
-        NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
-    }
-
     private func initializeHotkeyManagerIfNeeded() {
         NotchContentState.shared.onPromptModeSwitchRequested = { mode in
             self.handleLivePromptModeSwitch(mode)
@@ -2504,11 +2412,24 @@ struct ContentView: View {
         NotchContentState.shared.onUndoLastAIRequested = {
             self.undoLastAIProcessingFromHistory()
         }
-        NotchContentState.shared.onToggleAIProcessingRequested = {
-            _ = self.menuBarManager.toggleAIProcessingEnabled()
-        }
         NotchContentState.shared.onOpenPreferencesRequested = {
             self.menuBarManager.openPreferencesFromUI()
+        }
+        NotchContentState.shared.onPromptModeProfileChangeRequested = { profile in
+            if let p = profile {
+                self.promptModeOverrideText = SettingsStore.combineBasePrompt(
+                    for: .dictate,
+                    with: SettingsStore.stripBasePrompt(for: .dictate, from: p.prompt)
+                )
+                NotchContentState.shared.promptModeOverrideProfileName = p.name
+                NotchContentState.shared.promptModeOverrideProfileID = p.id
+                SettingsStore.shared.promptModeSelectedPromptID = p.id
+            } else {
+                self.promptModeOverrideText = nil
+                NotchContentState.shared.promptModeOverrideProfileName = nil
+                NotchContentState.shared.promptModeOverrideProfileID = nil
+                SettingsStore.shared.promptModeSelectedPromptID = nil
+            }
         }
 
         guard self.hotkeyManager == nil else { return }
@@ -2516,8 +2437,10 @@ struct ContentView: View {
         self.hotkeyManager = GlobalHotkeyManager(
             asrService: self.asr,
             shortcut: self.hotkeyShortcut,
+            promptModeShortcut: self.promptModeHotkeyShortcut,
             commandModeShortcut: self.commandModeHotkeyShortcut,
             rewriteModeShortcut: self.rewriteModeHotkeyShortcut,
+            promptModeShortcutEnabled: self.isPromptModeShortcutEnabled,
             commandModeShortcutEnabled: self.isCommandModeShortcutEnabled,
             rewriteModeShortcutEnabled: self.isRewriteModeShortcutEnabled,
             startRecordingCallback: {
@@ -2547,6 +2470,33 @@ struct ContentView: View {
                 let route = self.currentDictationOutputRouteForHotkeyStop()
                 DebugLogger.shared.info("Hotkey stop callback using route: \(route.rawValue)", source: "ContentView")
                 await self.stopAndProcessTranscription(route: route)
+            },
+            promptModeCallback: {
+                DebugLogger.shared.info("Prompt mode triggered", source: "ContentView")
+                self.captureRecordingContext()
+
+                // Resolve the full system prompt for the selected profile
+                let settings = SettingsStore.shared
+                if let promptID = settings.promptModeSelectedPromptID,
+                   let profile = settings.dictationPromptProfiles.first(where: { $0.id == promptID })
+                {
+                    self.promptModeOverrideText = SettingsStore.combineBasePrompt(for: .dictate, with: SettingsStore.stripBasePrompt(for: .dictate, from: profile.prompt))
+                    NotchContentState.shared.promptModeOverrideProfileName = profile.name
+                    NotchContentState.shared.promptModeOverrideProfileID = profile.id
+                }
+
+                NotchContentState.shared.isPromptModeActive = true
+                self.setActiveRecordingMode(.promptMode)
+                self.rewriteModeService.clearState()
+                self.menuBarManager.setOverlayMode(.dictation)
+
+                guard !self.asr.isRunning else { return }
+                if settings.enableTranscriptionSounds {
+                    TranscriptionSoundPlayer.shared.playStartSound()
+                }
+                Task {
+                    await self.asr.start()
+                }
             },
             commandModeCallback: {
                 DebugLogger.shared.info("Command mode triggered", source: "ContentView")
@@ -2607,6 +2557,9 @@ struct ContentView: View {
             },
             isDictateRecordingProvider: {
                 self.activeRecordingMode == .dictate
+            },
+            isPromptModeRecordingProvider: {
+                self.activeRecordingMode == .promptMode
             },
             isCommandRecordingProvider: {
                 self.activeRecordingMode == .command
@@ -2740,6 +2693,152 @@ struct ContentView: View {
 // SidebarItem enum moved to top of file
 
 // AudioDevice and AudioHardwareObserver moved to Services/AudioDeviceService.swift
+
+// MARK: - ContentView Playground & Onboarding Helpers
+
+extension ContentView {
+    private func callOpenAIChat() async {
+        guard !self.isCallingAI else { return }
+        await MainActor.run { self.isCallingAI = true }
+        defer { Task { await MainActor.run { isCallingAI = false } } }
+
+        let result = await processTextWithAI(aiInputText)
+        await MainActor.run { self.aiOutputText = result }
+    }
+
+    private func getModelStatusText() -> String {
+        if self.asr.isLoadingModel {
+            return "Loading model into memory... (30-60 sec)"
+        } else if self.asr.isDownloadingModel {
+            return "Downloading model... Please wait."
+        } else if self.asr.isAsrReady {
+            return "Model is ready to use!"
+        } else if self.asr.modelsExistOnDisk {
+            return "Model cached. Will load on first use."
+        } else {
+            return "Model will download when needed."
+        }
+    }
+
+    private var onboardingVoiceModelReady: Bool {
+        self.asr.isAsrReady || self.asr.modelsExistOnDisk || SettingsStore.shared.selectedSpeechModel.isInstalled
+    }
+
+    private var onboardingMicrophoneReady: Bool {
+        self.asr.micStatus == .authorized
+    }
+
+    private var onboardingAccessibilityReady: Bool {
+        self.accessibilityEnabled
+    }
+
+    private var onboardingAIReady: Bool {
+        self.settings.onboardingAISkipped || DictationAIPostProcessingGate.isConfigured()
+    }
+
+    private var onboardingPlaygroundReady: Bool {
+        self.settings.onboardingPlaygroundValidated
+    }
+
+    private var canCompleteOnboarding: Bool {
+        self.onboardingVoiceModelReady &&
+            self.onboardingMicrophoneReady &&
+            self.onboardingAccessibilityReady &&
+            self.onboardingAIReady &&
+            self.onboardingPlaygroundReady
+    }
+
+    @MainActor
+    private func revealAppInFinder() {
+        let appPath = Bundle.main.bundlePath
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: appPath)])
+    }
+
+    private func openApplicationsFolder() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
+    }
+}
+
+// MARK: - ContentView Accessibility & Lifecycle Helpers
+
+extension ContentView {
+    func completeOnboardingIfPossible() {
+        guard self.canCompleteOnboarding else { return }
+
+        self.settings.onboardingCompleted = true
+
+        let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
+        self.selectedSidebarItem = isOnboarded ? .preferences : .welcome
+    }
+
+    func labelFor(status: AVAuthorizationStatus) -> String {
+        switch status {
+        case .authorized: return "Microphone: Authorized"
+        case .denied: return "Microphone: Denied"
+        case .restricted: return "Microphone: Restricted"
+        case .notDetermined: return "Microphone: Not Determined"
+        @unknown default: return "Microphone: Unknown"
+        }
+    }
+
+    func checkAccessibilityPermissions() -> Bool {
+        return AXIsProcessTrusted()
+    }
+
+    func openAccessibilitySettings() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        AXIsProcessTrustedWithOptions(options)
+        self.didOpenAccessibilityPane = true
+        UserDefaults.standard.set(true, forKey: self.accessibilityRestartFlagKey)
+    }
+
+    func restartApp() {
+        let appPath = Bundle.main.bundlePath
+        let process = Process()
+        process.launchPath = "/usr/bin/open"
+        process.arguments = ["-n", appPath]
+        // Clear pending flag and hide prompt before restarting
+        UserDefaults.standard.set(false, forKey: self.accessibilityRestartFlagKey)
+        self.showRestartPrompt = false
+        try? process.run()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            NSApp.terminate(nil)
+        }
+    }
+
+    func startAccessibilityPolling() {
+        // Don't poll if already enabled or if we've already auto-restarted once
+        guard !self.accessibilityEnabled else { return }
+        guard !UserDefaults.standard.bool(forKey: self.hasAutoRestartedForAccessibilityKey) else { return }
+
+        // Cancel any existing polling task
+        self.accessibilityPollingTask?.cancel()
+
+        // Start background polling
+        self.accessibilityPollingTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000) // Poll every 2 seconds
+
+                // Check if permission was granted
+                let nowTrusted = AXIsProcessTrusted()
+                if nowTrusted && !self.accessibilityEnabled {
+                    await MainActor.run {
+                        DebugLogger.shared.info("Accessibility permission granted! Auto-restarting app...", source: "ContentView")
+
+                        // Mark that we've auto-restarted to prevent loops
+                        UserDefaults.standard.set(true, forKey: self.hasAutoRestartedForAccessibilityKey)
+
+                        // Give user brief moment to see any UI feedback
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            self.restartApp()
+                        }
+                    }
+                    break // Stop polling after triggering restart
+                }
+            }
+        }
+    }
+}
 
 // MARK: - Card Animation Modifier
 
