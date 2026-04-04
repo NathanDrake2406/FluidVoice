@@ -275,12 +275,9 @@ struct NotchExpandedView: View {
     @ObservedObject private var contentState = NotchContentState.shared
     @ObservedObject private var settings = SettingsStore.shared
     @ObservedObject private var activeAppMonitor = ActiveAppMonitor.shared
-    @ObservedObject private var historyStore = TranscriptionHistoryStore.shared
     @Environment(\.theme) private var theme
     @State private var showPromptHoverMenu = false
     @State private var promptHoverWorkItem: DispatchWorkItem?
-    @State private var showActionsMenu = false
-    @State private var showModeMenu = false
 
     private var modeColor: Color {
         self.contentState.mode.notchColor
@@ -389,119 +386,6 @@ struct NotchExpandedView: View {
 
     private var previewMaxWidth: CGFloat {
         180
-    }
-
-    private var hasHistory: Bool {
-        !self.historyStore.entries.isEmpty
-    }
-
-    private var canReprocess: Bool {
-        self.hasHistory && !self.contentState.isProcessing
-    }
-
-    private var actionsMenuContent: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button(action: {
-                self.showActionsMenu = false
-                self.contentState.onReprocessLastRequested?()
-            }) {
-                HStack(spacing: 6) {
-                    Text("Reprocess Last")
-                    Spacer()
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 9, weight: .semibold))
-                }
-            }
-            .buttonStyle(.plain)
-            .padding(.vertical, 4)
-            .disabled(!self.canReprocess)
-            .opacity(self.canReprocess ? 1 : 0.4)
-
-            Button(action: {
-                self.showActionsMenu = false
-                self.contentState.onCopyLastRequested?()
-            }) {
-                HStack(spacing: 6) {
-                    Text("Copy Last")
-                    Spacer()
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 9, weight: .semibold))
-                }
-            }
-            .buttonStyle(.plain)
-            .padding(.vertical, 4)
-            .disabled(!self.hasHistory)
-            .opacity(self.hasHistory ? 1 : 0.4)
-
-            Divider().padding(.vertical, 2)
-
-            Button(action: {
-                self.showActionsMenu = false
-                self.contentState.onUndoLastAIRequested?()
-            }) {
-                HStack(spacing: 6) {
-                    Text("Undo AI")
-                    Spacer()
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 9, weight: .semibold))
-                }
-            }
-            .buttonStyle(.plain)
-            .padding(.vertical, 4)
-            .disabled(!self.hasHistory)
-            .opacity(self.hasHistory ? 1 : 0.4)
-        }
-        .font(.system(size: 9, weight: .medium))
-        .foregroundStyle(.white)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(Color.black)
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
-    }
-
-    private var normalizedMode: OverlayMode {
-        switch self.contentState.mode {
-        case .dictation: return .dictation
-        case .edit, .write, .rewrite: return .edit
-        case .command: return .command
-        }
-    }
-
-    private var modeModeContent: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach([OverlayMode.dictation, .edit], id: \.self) { mode in
-                let isSelected = self.normalizedMode == mode
-                Button(action: {
-                    self.showModeMenu = false
-                    self.contentState.onOverlayModeSwitchRequested?(mode)
-                }) {
-                    HStack(spacing: 6) {
-                        Text(mode == .dictation ? "Dictate" : "Edit")
-                        Spacer()
-                        if isSelected {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 9, weight: .semibold))
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-                .padding(.vertical, 4)
-            }
-        }
-        .font(.system(size: 9, weight: .medium))
-        .foregroundStyle(.white)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(Color.black)
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
     }
 
     private func handlePromptHover(_ hovering: Bool) {
@@ -695,8 +579,6 @@ struct NotchExpandedView: View {
                     .opacity(self.isPromptSelectableMode ? 1.0 : 0.6)
                     .onTapGesture {
                         guard self.isPromptSelectableMode, !self.contentState.isProcessing else { return }
-                        self.showActionsMenu = false
-                        self.showModeMenu = false
                         self.showPromptHoverMenu.toggle()
                     }
 
@@ -708,72 +590,6 @@ struct NotchExpandedView: View {
                     }
                 }
                 .frame(maxWidth: 180, alignment: .top)
-                .transition(.opacity)
-            }
-
-            // Mode + AI + Actions chips row
-            if !self.contentState.isProcessing {
-                HStack(spacing: 6) {
-                    // Mode chip
-                    HStack(spacing: 4) {
-                        Text(self.normalizedMode == .dictation ? "Dictate" : "Edit")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.75))
-                        Image(systemName: "chevron.up")
-                            .font(.system(size: 7, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.45))
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Color.white.opacity(0.07))
-                    .cornerRadius(5)
-                    .onTapGesture {
-                        guard !self.contentState.isProcessing, self.normalizedMode != .command else { return }
-                        self.showPromptHoverMenu = false
-                        self.showActionsMenu = false
-                        self.showModeMenu.toggle()
-                    }
-
-                    // Actions chip
-                    HStack(spacing: 4) {
-                        Text("Actions")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.white.opacity(self.hasHistory ? 0.75 : 0.35))
-                        Image(systemName: "chevron.up")
-                            .font(.system(size: 7, weight: .semibold))
-                            .foregroundStyle(.white.opacity(self.hasHistory ? 0.45 : 0.25))
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Color.white.opacity(0.07))
-                    .cornerRadius(5)
-                    .opacity(self.hasHistory ? 1 : 0.6)
-                    .onTapGesture {
-                        guard self.hasHistory, !self.contentState.isProcessing else { return }
-                        self.showPromptHoverMenu = false
-                        self.showModeMenu = false
-                        self.showActionsMenu.toggle()
-                    }
-                }
-                // Menus float above as overlays — don't affect VStack height/width so no layout reflow
-                .overlay(alignment: .bottomLeading) {
-                    if self.showModeMenu {
-                        self.modeModeContent
-                            .fixedSize()
-                            .offset(y: -4)
-                            .transition(.opacity)
-                            .zIndex(20)
-                    }
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    if self.showActionsMenu {
-                        self.actionsMenuContent
-                            .fixedSize()
-                            .offset(y: -4)
-                            .transition(.opacity)
-                            .zIndex(20)
-                    }
-                }
                 .transition(.opacity)
             }
 
