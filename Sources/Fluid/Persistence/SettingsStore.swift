@@ -16,6 +16,10 @@ final class SettingsStore: ObservableObject {
     static let defaultTranscriptionPreviewCharLimit = 150
     private let defaults = UserDefaults.standard
     private let keychain = KeychainService.shared
+    private(set) var launchAtStartupEnabled = false
+    private(set) var launchAtStartupErrorMessage: String?
+    private(set) var launchAtStartupStatusMessage =
+        "FluidVoice reflects the actual macOS login item state. Unsigned or development builds may fail to enable this."
 
     private init() {
         self.migrateTranscriptionStartSoundIfNeeded()
@@ -26,6 +30,7 @@ final class SettingsStore: ObservableObject {
         self.migrateLegacyDictationAIPreferenceIfNeeded()
         self.normalizePromptSelectionsIfNeeded()
         self.migrateOverlayBottomOffsetTo50IfNeeded()
+        self.refreshLaunchAtStartupStatus(clearError: true, logMismatch: false)
     }
 
     // MARK: - Prompt Profiles (Unified)
@@ -1397,11 +1402,9 @@ final class SettingsStore: ObservableObject {
     }
 
     var launchAtStartup: Bool {
-        get { self.defaults.bool(forKey: Keys.launchAtStartup) }
+        get { self.launchAtStartupEnabled }
         set {
-            self.defaults.set(newValue, forKey: Keys.launchAtStartup)
-            // Update launch agent registration
-            self.updateLaunchAtStartup(newValue)
+            self.setLaunchAtStartup(newValue)
         }
     }
 
@@ -1409,6 +1412,8 @@ final class SettingsStore: ObservableObject {
 
     func initializeAppSettings() {
         #if os(macOS)
+        self.refreshLaunchAtStartupStatus(clearError: true)
+
         // Apply dock visibility setting on app launch
         let dockVisible = self.showInDock
         DebugLogger.shared.info("Initializing app with dock visibility: \(dockVisible)", source: "SettingsStore")
@@ -2243,26 +2248,157 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    private func updateLaunchAtStartup(_ enabled: Bool) {
+    func refreshLaunchAtStartupStatus(clearError: Bool = false, logMismatch: Bool = true) {
         #if os(macOS)
-        // Note: SMAppService.mainApp requires the app to be signed with Developer ID
-        // and have proper entitlements. This may not work in development builds.
+        let persistedValue = self.defaults.bool(forKey: Keys.launchAtStartup)
+        let systemState = self.currentLaunchAtStartupSystemState()
+        let systemEnabled = systemState.isEnabled
+
+        if logMismatch, persistedValue != systemEnabled {
+            DebugLogger.shared.warning(
+                "Launch at startup preference mismatch. Stored: \(persistedValue), actual: \(systemEnabled). Preferring macOS state.",
+                source: "SettingsStore"
+            )
+        }
+
+        self.defaults.set(systemEnabled, forKey: Keys.launchAtStartup)
+
+        let nextErrorMessage = clearError ? nil : self.launchAtStartupErrorMessage
+        if self.launchAtStartupEnabled != systemEnabled ||
+            self.launchAtStartupStatusMessage != systemState.message ||
+            self.launchAtStartupErrorMessage != nextErrorMessage
+        {
+            objectWillChange.send()
+            self.launchAtStartupEnabled = systemEnabled
+            self.launchAtStartupStatusMessage = systemState.message
+            self.launchAtStartupErrorMessage = nextErrorMessage
+        }
+        #else
+        let unavailableMessage = "Launch at startup is only available on macOS."
+        let nextErrorMessage = clearError ? nil : self.launchAtStartupErrorMessage
+        if self.launchAtStartupEnabled ||
+            self.launchAtStartupStatusMessage != unavailableMessage ||
+            self.launchAtStartupErrorMessage != nextErrorMessage
+        {
+            objectWillChange.send()
+            self.launchAtStartupEnabled = false
+            self.launchAtStartupStatusMessage = unavailableMessage
+            self.launchAtStartupErrorMessage = nextErrorMessage
+        }
+        #endif
+    }
+
+    func setLaunchAtStartup(_ enabled: Bool) {
+        #if os(macOS)
         let service = SMAppService.mainApp
+        let statusBeforeChange = self.currentLaunchAtStartupSystemState()
+
+        if statusBeforeChange.isEnabled == enabled {
+            self.refreshLaunchAtStartupStatus(clearError: true, logMismatch: false)
+            return
+        }
 
         do {
             if enabled {
                 try service.register()
-                DebugLogger.shared.info("Successfully registered for launch at startup", source: "SettingsStore")
+                DebugLogger.shared.info("Requested registration for launch at startup", source: "SettingsStore")
             } else {
                 try service.unregister()
-                DebugLogger.shared.info("Successfully unregistered from launch at startup", source: "SettingsStore")
+                DebugLogger.shared.info("Requested unregistration from launch at startup", source: "SettingsStore")
+            }
+
+            self.refreshLaunchAtStartupStatus(clearError: true, logMismatch: false)
+
+            if self.launchAtStartupEnabled != enabled {
+                let fallbackMessage = enabled
+                    ? "macOS did not enable FluidVoice in Login Items. Unsigned or development builds may not support launch at startup."
+                    : "macOS still shows FluidVoice in Login Items. Check System Settings > General > Login Items."
+                objectWillChange.send()
+                self.launchAtStartupErrorMessage = fallbackMessage
+                DebugLogger.shared.warning(fallbackMessage, source: "SettingsStore")
             }
         } catch {
             DebugLogger.shared.error("Failed to update launch at startup: \(error)", source: "SettingsStore")
-            // In development, this is expected to fail without proper signing/entitlements
-            // The setting is still saved and will work when the app is properly signed
+            self.refreshLaunchAtStartupStatus(clearError: false, logMismatch: false)
+
+            let message = self.launchAtStartupFailureMessage(for: error, enabling: enabled)
+            if self.launchAtStartupErrorMessage != message {
+                objectWillChange.send()
+                self.launchAtStartupErrorMessage = message
+            }
+        }
+        #else
+        let message = "Launch at startup is only available on macOS."
+        if self.launchAtStartupErrorMessage != message {
+            objectWillChange.send()
+            self.launchAtStartupErrorMessage = message
         }
         #endif
+    }
+
+    #if os(macOS)
+    private func currentLaunchAtStartupSystemState() -> LaunchAtStartupSystemState {
+        let service = SMAppService.mainApp
+        switch service.status {
+        case .enabled:
+            return .enabled
+        case .requiresApproval:
+            return .requiresApproval
+        case .notFound:
+            return .disabled
+        case .notRegistered:
+            return .disabled
+        @unknown default:
+            return .disabled
+        }
+    }
+
+    private func launchAtStartupFailureMessage(for error: Error, enabling: Bool) -> String {
+        let nsError = error as NSError
+        let action = enabling ? "enable" : "disable"
+        let lowercasedDescription = nsError.localizedDescription.lowercased()
+
+        if lowercasedDescription.contains("developer") ||
+            lowercasedDescription.contains("sign") ||
+            lowercasedDescription.contains("entitlement")
+        {
+            return "FluidVoice could not \(action) launch at startup. This build may not be signed correctly for macOS Login Items."
+        }
+
+        if lowercasedDescription.contains("approval") ||
+            lowercasedDescription.contains("authorize")
+        {
+            return "macOS needs approval before FluidVoice can \(action) launch at startup. Check System Settings > General > Login Items."
+        }
+
+        return "FluidVoice could not \(action) launch at startup. macOS reported: \(nsError.localizedDescription)"
+    }
+    #endif
+
+    private enum LaunchAtStartupSystemState {
+        case enabled
+        case disabled
+        case requiresApproval
+
+        var isEnabled: Bool {
+            switch self {
+            case .enabled:
+                return true
+            case .disabled, .requiresApproval:
+                return false
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .enabled:
+                return "FluidVoice reflects the actual macOS login item state."
+            case .disabled:
+                return "FluidVoice reflects the actual macOS login item state. Unsigned or development builds may fail to enable this."
+            case .requiresApproval:
+                return "macOS requires approval for FluidVoice in Login Items before launch at startup becomes active."
+            }
+        }
     }
 
     private func updateDockVisibility(_ visible: Bool) {

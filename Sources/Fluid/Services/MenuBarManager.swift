@@ -242,15 +242,6 @@ final class MenuBarManager: ObservableObject {
     }
 
     private func setupMenuBarSafely() {
-        // Check if window server connection is available
-        guard NSApp.isActive || NSApp.isRunning else {
-            // Retry after a short delay if app isn't ready
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.setupMenuBarSafely()
-            }
-            return
-        }
-
         do {
             try self.setupMenuBar()
             self.isSetup = true

@@ -106,6 +106,13 @@ struct SettingsView: View {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
     }
 
+    private var launchAtStartupBinding: Binding<Bool> {
+        Binding(
+            get: { self.settings.launchAtStartupEnabled },
+            set: { self.settings.setLaunchAtStartup($0) }
+        )
+    }
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 16) {
@@ -122,11 +129,9 @@ struct SettingsView: View {
                             self.settingsToggleRow(
                                 title: "Launch at startup",
                                 description: "Automatically start FluidVoice when you log in",
-                                footnote: "Note: Requires app to be signed for this to work.",
-                                isOn: Binding(
-                                    get: { SettingsStore.shared.launchAtStartup },
-                                    set: { SettingsStore.shared.launchAtStartup = $0 }
-                                )
+                                footnote: self.settings.launchAtStartupStatusMessage,
+                                errorMessage: self.settings.launchAtStartupErrorMessage,
+                                isOn: self.launchAtStartupBinding
                             )
                             Divider().opacity(0.2)
 
@@ -1327,6 +1332,7 @@ struct SettingsView: View {
                 self.cachedDefaultInputName = AudioDevice.getDefaultInputDevice()?.name ?? ""
                 self.cachedDefaultOutputName = AudioDevice.getDefaultOutputDevice()?.name ?? ""
                 self.refreshRollbackState()
+                self.settings.refreshLaunchAtStartupStatus(clearError: true, logMismatch: false)
             }
         }
         .onChange(of: self.visualizerNoiseThreshold) { _, newValue in
@@ -1406,6 +1412,7 @@ struct SettingsView: View {
         title: String,
         description: String,
         footnote: String? = nil,
+        errorMessage: String? = nil,
         isOn: Binding<Bool>
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1430,6 +1437,12 @@ struct SettingsView: View {
                 Text(footnote)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+            }
+
+            if let errorMessage = errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(self.theme.palette.warning)
             }
         }
     }

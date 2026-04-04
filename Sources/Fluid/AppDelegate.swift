@@ -77,7 +77,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func forceFrontOnLaunch() {
-        for delay in [0.0, 0.12, 0.35] {
+        // Login-item launches can take longer before SwiftUI's main window exists.
+        // Keep retrying for a few seconds so the existing ContentView startup path runs.
+        for delay in [0.0, 0.12, 0.35, 1.0, 2.0, 4.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
                 self.bringMainWindowToFront()
@@ -95,6 +97,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }) {
             mainWindow.orderFrontRegardless()
             mainWindow.makeKeyAndOrderFront(nil)
+            DebugLogger.shared.debug("Brought main window to front", source: "AppDelegate")
+        } else {
+            DebugLogger.shared.debug("Main window not ready yet during launch-front retry", source: "AppDelegate")
         }
     }
 
