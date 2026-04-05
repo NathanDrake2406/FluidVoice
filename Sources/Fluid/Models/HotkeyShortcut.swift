@@ -99,6 +99,16 @@ struct HotkeyShortcut: Codable, Equatable {
 }
 
 extension HotkeyShortcut {
+    private static let relevantModifierMask: NSEvent.ModifierFlags = [.function, .command, .option, .control, .shift]
+
+    var relevantModifierFlags: NSEvent.ModifierFlags {
+        self.modifierFlags.intersection(Self.relevantModifierMask)
+    }
+
+    func matches(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
+        keyCode == self.keyCode && modifiers.intersection(Self.relevantModifierMask) == self.relevantModifierFlags
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.keyCode = try c.decode(UInt16.self, forKey: .keyCode)

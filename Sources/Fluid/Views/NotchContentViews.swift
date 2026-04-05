@@ -143,6 +143,8 @@ class NotchContentState: ObservableObject {
     var onUndoLastAIRequested: (() -> Void)?
     /// Called when the user requests opening Preferences.
     var onOpenPreferencesRequested: (() -> Void)?
+    /// Called when the user requests cancelling the current recording or overlay session.
+    var onCancelRequested: (() -> Void)?
 
     /// Set recording state (for waveform visibility in expanded view)
     func setRecordingInExpandedMode(_ recording: Bool) {

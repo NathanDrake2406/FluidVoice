@@ -79,6 +79,7 @@ struct ContentView: View {
     @State private var promptModeHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.promptModeHotkeyShortcut
     @State private var commandModeHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.commandModeHotkeyShortcut
     @State private var rewriteModeHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.rewriteModeHotkeyShortcut
+    @State private var cancelRecordingHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.cancelRecordingHotkeyShortcut
     @State private var isPromptModeShortcutEnabled: Bool = SettingsStore.shared.promptModeShortcutEnabled
     @State private var isCommandModeShortcutEnabled: Bool = SettingsStore.shared.commandModeShortcutEnabled
     @State private var aiSettingsExpanded: Bool = true
@@ -91,6 +92,7 @@ struct ContentView: View {
     @State private var isRecordingPromptModeShortcut = false
     @State private var isRecordingCommandModeShortcut = false
     @State private var isRecordingRewriteShortcut = false
+    @State private var isRecordingCancelShortcut = false
     @State private var pendingModifierFlags: NSEvent.ModifierFlags = []
     @State private var pendingModifierKeyCode: UInt16?
     @State private var pendingModifierOnly = false
@@ -365,61 +367,36 @@ struct ContentView: View {
 
             NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
                 let eventModifiers = event.modifierFlags.intersection([.function, .command, .option, .control, .shift])
-                let shortcutModifiers = self.hotkeyShortcut.modifierFlags.intersection([.function, .command, .option, .control, .shift])
-
-                let isRecordingAnyShortcut = self.isRecordingShortcut || self.isRecordingPromptModeShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut
+                let isRecordingAnyShortcut = self.isRecordingShortcut ||
+                    self.isRecordingPromptModeShortcut ||
+                    self.isRecordingCommandModeShortcut ||
+                    self.isRecordingRewriteShortcut ||
+                    self.isRecordingCancelShortcut
 
                 if event.type == .keyDown {
-                    if event.keyCode == self.hotkeyShortcut.keyCode && eventModifiers == shortcutModifiers {
+                    if self.hotkeyShortcut.matches(keyCode: event.keyCode, modifiers: eventModifiers) {
                         DebugLogger.shared.debug("NSEvent monitor: Global hotkey matched on keyDown, passing event through (GlobalHotkeyManager handles)", source: "ContentView")
                         return event
                     }
 
                     guard isRecordingAnyShortcut else {
-                        if event.keyCode == 53 {
-                            // Escape pressed - handle cancellation
-                            var handled = false
-
-                            // Close expanded command notch if visible (highest priority)
-                            if NotchOverlayManager.shared.isCommandOutputExpanded {
-                                DebugLogger.shared
-                                    .debug(
-                                        "NSEvent monitor: Escape pressed, closing expanded command notch",
-                                        source: "ContentView"
-                                    )
-                                NotchOverlayManager.shared.hideExpandedCommandOutput()
-                                handled = true
-                            }
-
-                            if self.asr.isRunning {
-                                DebugLogger.shared.debug("NSEvent monitor: Escape pressed, cancelling ASR recording", source: "ContentView")
-                                Task { await self.asr.stopWithoutTranscription() }
-                                handled = true
-                            }
-
-                            // Close mode views if active
-                            if self.selectedSidebarItem == .commandMode || self.selectedSidebarItem == .rewriteMode {
-                                DebugLogger.shared.debug("NSEvent monitor: Escape pressed, closing mode view", source: "ContentView")
-                                let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
-                                self.selectedSidebarItem = isOnboarded ? .preferences : .welcome
-                                handled = true
-                            }
-
-                            if handled {
-                                return nil // Suppress beep
-                            }
+                        if self.cancelRecordingHotkeyShortcut.matches(keyCode: event.keyCode, modifiers: eventModifiers),
+                           self.handleCancelShortcut()
+                        {
+                            return nil
                         }
                         self.resetPendingShortcutState()
                         return event
                     }
 
                     let keyCode = event.keyCode
-                    if keyCode == 53 {
+                    if keyCode == 53 && !self.isRecordingCancelShortcut {
                         DebugLogger.shared.debug("NSEvent monitor: Escape pressed, cancelling shortcut recording", source: "ContentView")
                         self.isRecordingShortcut = false
                         self.isRecordingPromptModeShortcut = false
                         self.isRecordingCommandModeShortcut = false
                         self.isRecordingRewriteShortcut = false
+                        self.isRecordingCancelShortcut = false
                         self.resetPendingShortcutState()
                         return nil
                     }
@@ -433,6 +410,10 @@ struct ContentView: View {
                         SettingsStore.shared.rewriteModeHotkeyShortcut = newShortcut
                         self.hotkeyManager?.updateRewriteModeShortcut(newShortcut)
                         self.isRecordingRewriteShortcut = false
+                    } else if self.isRecordingCancelShortcut {
+                        self.cancelRecordingHotkeyShortcut = newShortcut
+                        SettingsStore.shared.cancelRecordingHotkeyShortcut = newShortcut
+                        self.isRecordingCancelShortcut = false
                     } else if self.isRecordingPromptModeShortcut {
                         self.promptModeHotkeyShortcut = newShortcut
                         SettingsStore.shared.promptModeHotkeyShortcut = newShortcut
@@ -476,6 +457,10 @@ struct ContentView: View {
                                 SettingsStore.shared.rewriteModeHotkeyShortcut = newShortcut
                                 self.hotkeyManager?.updateRewriteModeShortcut(newShortcut)
                                 self.isRecordingRewriteShortcut = false
+                            } else if self.isRecordingCancelShortcut {
+                                self.cancelRecordingHotkeyShortcut = newShortcut
+                                SettingsStore.shared.cancelRecordingHotkeyShortcut = newShortcut
+                                self.isRecordingCancelShortcut = false
                             } else if self.isRecordingPromptModeShortcut {
                                 self.promptModeHotkeyShortcut = newShortcut
                                 SettingsStore.shared.promptModeHotkeyShortcut = newShortcut
@@ -1142,6 +1127,8 @@ struct ContentView: View {
             isRecordingCommandModeShortcut: self.$isRecordingCommandModeShortcut,
             rewriteShortcut: self.$rewriteModeHotkeyShortcut,
             isRecordingRewriteShortcut: self.$isRecordingRewriteShortcut,
+            cancelRecordingShortcut: self.$cancelRecordingHotkeyShortcut,
+            isRecordingCancelShortcut: self.$isRecordingCancelShortcut,
             commandModeShortcutEnabled: self.$isCommandModeShortcutEnabled,
             rewriteShortcutEnabled: self.$isRewriteModeShortcutEnabled,
             hotkeyManagerInitialized: self.$hotkeyManagerInitialized,
@@ -2415,6 +2402,9 @@ struct ContentView: View {
         NotchContentState.shared.onOpenPreferencesRequested = {
             self.menuBarManager.openPreferencesFromUI()
         }
+        NotchContentState.shared.onCancelRequested = {
+            _ = self.handleCancelShortcut()
+        }
         NotchContentState.shared.onPromptModeProfileChangeRequested = { profile in
             if let p = profile {
                 self.promptModeOverrideText = SettingsStore.combineBasePrompt(
@@ -2625,6 +2615,39 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    @discardableResult
+    private func handleCancelShortcut() -> Bool {
+        var handled = false
+
+        if NotchOverlayManager.shared.isCommandOutputExpanded {
+            DebugLogger.shared.debug("Cancel shortcut: closing expanded command notch", source: "ContentView")
+            NotchOverlayManager.shared.hideExpandedCommandOutput()
+            NotchOverlayManager.shared.onCommandOutputDismiss?()
+            handled = true
+        }
+
+        if self.asr.isRunning {
+            DebugLogger.shared.debug("Cancel shortcut: cancelling ASR recording", source: "ContentView")
+            Task { await self.asr.stopWithoutTranscription() }
+            handled = true
+        }
+
+        if NotchOverlayManager.shared.isBottomOverlayVisible || NotchOverlayManager.shared.isOverlayVisible {
+            DebugLogger.shared.debug("Cancel shortcut: hiding recording overlay", source: "ContentView")
+            NotchOverlayManager.shared.hide()
+            handled = true
+        }
+
+        if self.selectedSidebarItem == .commandMode || self.selectedSidebarItem == .rewriteMode {
+            DebugLogger.shared.debug("Cancel shortcut: closing mode view", source: "ContentView")
+            let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
+            self.selectedSidebarItem = isOnboarded ? .preferences : .welcome
+            handled = true
+        }
+
+        return handled
     }
 
     // MARK: - Model Management Helpers

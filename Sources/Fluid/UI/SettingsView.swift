@@ -33,6 +33,8 @@ struct SettingsView: View {
     @Binding var isRecordingCommandModeShortcut: Bool
     @Binding var rewriteShortcut: HotkeyShortcut
     @Binding var isRecordingRewriteShortcut: Bool
+    @Binding var cancelRecordingShortcut: HotkeyShortcut
+    @Binding var isRecordingCancelShortcut: Bool
     @Binding var commandModeShortcutEnabled: Bool
     @Binding var rewriteShortcutEnabled: Bool
     @Binding var hotkeyManagerInitialized: Bool
@@ -520,7 +522,7 @@ struct SettingsView: View {
                             Spacer()
 
                             if self.accessibilityEnabled {
-                                if self.isRecordingShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut {
+                                if self.isRecordingShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut || self.isRecordingCancelShortcut {
                                     Text("Recording…")
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(.orange)
@@ -543,7 +545,7 @@ struct SettingsView: View {
 
                         if self.accessibilityEnabled {
                             VStack(alignment: .leading, spacing: 12) {
-                                if self.isRecordingShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut {
+                                if self.isRecordingShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut || self.isRecordingCancelShortcut {
                                     HStack(spacing: 8) {
                                         Image(systemName: "hand.point.up.left.fill")
                                             .foregroundStyle(.orange)
@@ -657,6 +659,20 @@ struct SettingsView: View {
                                         onChangePressed: {
                                             DebugLogger.shared.debug("Starting to record new write mode shortcut", source: "SettingsView")
                                             self.isRecordingRewriteShortcut = true
+                                        }
+                                    )
+                                    Divider().opacity(0.2).padding(.vertical, 4)
+
+                                    self.shortcutRow(
+                                        icon: "xmark.circle.fill",
+                                        iconColor: .secondary,
+                                        title: "Cancel Recording",
+                                        description: "Cancel the current recording or dismiss the active recording overlay",
+                                        shortcut: self.cancelRecordingShortcut,
+                                        isRecording: self.isRecordingCancelShortcut,
+                                        onChangePressed: {
+                                            DebugLogger.shared.debug("Starting to record new cancel shortcut", source: "SettingsView")
+                                            self.isRecordingCancelShortcut = true
                                         }
                                     )
                                 }

@@ -1721,6 +1721,23 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    var cancelRecordingHotkeyShortcut: HotkeyShortcut {
+        get {
+            if let data = defaults.data(forKey: Keys.cancelRecordingHotkeyShortcut),
+               let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data)
+            {
+                return shortcut
+            }
+            return HotkeyShortcut(keyCode: 53, modifierFlags: [])
+        }
+        set {
+            objectWillChange.send()
+            if let data = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(data, forKey: Keys.cancelRecordingHotkeyShortcut)
+            }
+        }
+    }
+
     var commandModeConfirmBeforeExecute: Bool {
         get {
             // Default to true (safer - ask before running commands)
@@ -3226,6 +3243,7 @@ private extension SettingsStore {
         static let commandModeSelectedProviderID = "CommandModeSelectedProviderID"
         static let commandModeHotkeyShortcut = "CommandModeHotkeyShortcut"
         static let commandModeConfirmBeforeExecute = "CommandModeConfirmBeforeExecute"
+        static let cancelRecordingHotkeyShortcut = "CancelRecordingHotkeyShortcut"
         static let commandModeLinkedToGlobal = "CommandModeLinkedToGlobal"
         static let commandModeShortcutEnabled = "CommandModeShortcutEnabled"
 

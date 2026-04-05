@@ -382,12 +382,12 @@ final class GlobalHotkeyManager: NSObject {
                 await PostTranscriptionEditTracker.shared.handleKeyDown(keyCode: keyCode, modifiers: eventModifiers)
             }
 
-            // Check Escape key first (keyCode 53) - cancels recording and closes mode views
-            if keyCode == 53, eventModifiers.isEmpty {
+            // Check the configured cancel shortcut first.
+            if SettingsStore.shared.cancelRecordingHotkeyShortcut.matches(keyCode: keyCode, modifiers: eventModifiers) {
                 var handled = false
 
                 if self.asrService.isRunning {
-                    DebugLogger.shared.info("Escape pressed - cancelling recording", source: "GlobalHotkeyManager")
+                    DebugLogger.shared.info("Cancel shortcut pressed - cancelling recording", source: "GlobalHotkeyManager")
                     Task { @MainActor in
                         await self.asrService.stopWithoutTranscription()
                     }
@@ -396,7 +396,7 @@ final class GlobalHotkeyManager: NSObject {
 
                 // Trigger cancel callback to close mode views / reset state
                 if let callback = cancelCallback, callback() {
-                    DebugLogger.shared.info("Escape pressed - cancel callback handled", source: "GlobalHotkeyManager")
+                    DebugLogger.shared.info("Cancel shortcut pressed - cancel callback handled", source: "GlobalHotkeyManager")
                     handled = true
                 }
 
