@@ -110,7 +110,7 @@ struct ContentView: View {
     @State private var visualizerNoiseThreshold: Double = SettingsStore.shared.visualizerNoiseThreshold
     @State private var inputDevices: [AudioDevice.Device] = []
     @State private var outputDevices: [AudioDevice.Device] = []
-    @State private var selectedInputUID: String = SettingsStore.shared.preferredInputDeviceUID ?? ""
+    @State private var selectedInputUID: String = AudioDevice.getDefaultInputDevice()?.uid ?? ""
     @State private var selectedOutputUID: String = SettingsStore.shared.preferredOutputDeviceUID ?? ""
 
     // AI Prompts Tab State
@@ -241,13 +241,11 @@ struct ContentView: View {
                 if self.selectedInputUID.isEmpty, let defIn = AudioDevice.getDefaultInputDevice()?.uid { self.selectedInputUID = defIn }
                 if self.selectedOutputUID.isEmpty, let defOut = AudioDevice.getDefaultOutputDevice()?.uid { self.selectedOutputUID = defOut }
 
-                // Load saved preferences for UI display (but don't force system defaults)
-                // FluidVoice should NOT control system-wide audio routing
-                if let prefIn = SettingsStore.shared.preferredInputDeviceUID,
-                   prefIn.isEmpty == false,
-                   inputDevices.first(where: { $0.uid == prefIn }) != nil
+                // Input device UI should mirror the current macOS default device.
+                if let systemInputUID = AudioDevice.getDefaultInputDevice()?.uid,
+                   self.inputDevices.contains(where: { $0.uid == systemInputUID })
                 {
-                    self.selectedInputUID = prefIn
+                    self.selectedInputUID = systemInputUID
                 }
 
                 if let prefOut = SettingsStore.shared.preferredOutputDeviceUID,
@@ -2878,7 +2876,7 @@ private extension ContentView {
         self.isRewriteModeShortcutEnabled = SettingsStore.shared.rewriteModeShortcutEnabled
         self.playgroundUsed = SettingsStore.shared.playgroundUsed
         self.visualizerNoiseThreshold = SettingsStore.shared.visualizerNoiseThreshold
-        self.selectedInputUID = SettingsStore.shared.preferredInputDeviceUID ?? ""
+        self.selectedInputUID = AudioDevice.getDefaultInputDevice()?.uid ?? ""
         self.selectedOutputUID = SettingsStore.shared.preferredOutputDeviceUID ?? ""
         self.enableDebugLogs = SettingsStore.shared.enableDebugLogs
         self.pressAndHoldModeEnabled = SettingsStore.shared.pressAndHoldMode

@@ -948,12 +948,8 @@ struct SettingsView: View {
                                     if !newDevices.isEmpty {
                                         let currentValid = newDevices.contains { $0.uid == self.selectedInputUID }
                                         if !currentValid {
-                                            if let prefUID = SettingsStore.shared.preferredInputDeviceUID,
-                                               newDevices.contains(where: { $0.uid == prefUID })
-                                            {
-                                                self.selectedInputUID = prefUID
-                                            } else if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid,
-                                                      newDevices.contains(where: { $0.uid == defaultUID })
+                                            if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid,
+                                               newDevices.contains(where: { $0.uid == defaultUID })
                                             {
                                                 self.selectedInputUID = defaultUID
                                             } else {
@@ -1323,12 +1319,8 @@ struct SettingsView: View {
                 if !self.inputDevices.isEmpty {
                     let inputValid = self.inputDevices.contains { $0.uid == self.selectedInputUID }
                     if !inputValid || self.selectedInputUID.isEmpty {
-                        if let prefUID = SettingsStore.shared.preferredInputDeviceUID,
-                           self.inputDevices.contains(where: { $0.uid == prefUID })
-                        {
-                            self.selectedInputUID = prefUID
-                        } else if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid,
-                                  self.inputDevices.contains(where: { $0.uid == defaultUID })
+                        if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid,
+                           self.inputDevices.contains(where: { $0.uid == defaultUID })
                         {
                             self.selectedInputUID = defaultUID
                         } else {
