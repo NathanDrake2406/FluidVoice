@@ -97,6 +97,7 @@ struct ContentView: View {
     @State private var pendingModifierFlags: NSEvent.ModifierFlags = []
     @State private var pendingModifierKeyCode: UInt16?
     @State private var pendingModifierOnly = false
+    @State private var shortcutRecordingMessage: String? = nil
     @FocusState private var isTranscriptionFocused: Bool
 
     @State private var selectedSidebarItem: SidebarItem?
@@ -371,19 +372,16 @@ struct ContentView: View {
                     self.isRecordingCommandModeShortcut ||
                     self.isRecordingRewriteShortcut ||
                     self.isRecordingCancelShortcut
+                let recordingTarget = self.currentShortcutRecordingTarget()
 
                 if event.type == .keyDown {
-                    if self.hotkeyShortcut.matches(keyCode: event.keyCode, modifiers: eventModifiers) {
-                        DebugLogger.shared.debug("NSEvent monitor: Global hotkey matched on keyDown, passing event through (GlobalHotkeyManager handles)", source: "ContentView")
-                        return event
-                    }
-
                     guard isRecordingAnyShortcut else {
                         if self.cancelRecordingHotkeyShortcut.matches(keyCode: event.keyCode, modifiers: eventModifiers),
                            self.handleCancelShortcut()
                         {
                             return nil
                         }
+                        self.shortcutRecordingMessage = nil
                         self.resetPendingShortcutState()
                         return event
                     }
@@ -391,12 +389,7 @@ struct ContentView: View {
                     let keyCode = event.keyCode
                     if keyCode == 53 && !self.isRecordingCancelShortcut {
                         DebugLogger.shared.debug("NSEvent monitor: Escape pressed, cancelling shortcut recording", source: "ContentView")
-                        self.isRecordingShortcut = false
-                        self.isRecordingPromptModeShortcut = false
-                        self.isRecordingCommandModeShortcut = false
-                        self.isRecordingRewriteShortcut = false
-                        self.isRecordingCancelShortcut = false
-                        self.resetPendingShortcutState()
+                        self.clearShortcutRecordingMode()
                         return nil
                     }
 
@@ -404,44 +397,25 @@ struct ContentView: View {
                     let newShortcut = HotkeyShortcut(keyCode: keyCode, modifierFlags: combinedModifiers)
                     DebugLogger.shared.debug("NSEvent monitor: Recording new shortcut: \(newShortcut.displayString)", source: "ContentView")
 
-                    if self.isRecordingRewriteShortcut {
-                        self.rewriteModeHotkeyShortcut = newShortcut
-                        SettingsStore.shared.rewriteModeHotkeyShortcut = newShortcut
-                        self.hotkeyManager?.updateRewriteModeShortcut(newShortcut)
-                        self.isRecordingRewriteShortcut = false
-                    } else if self.isRecordingCancelShortcut {
-                        self.cancelRecordingHotkeyShortcut = newShortcut
-                        SettingsStore.shared.cancelRecordingHotkeyShortcut = newShortcut
-                        self.isRecordingCancelShortcut = false
-                    } else if self.isRecordingPromptModeShortcut {
-                        self.promptModeHotkeyShortcut = newShortcut
-                        SettingsStore.shared.promptModeHotkeyShortcut = newShortcut
-                        self.hotkeyManager?.updatePromptModeShortcut(newShortcut)
-                        self.isRecordingPromptModeShortcut = false
-                    } else if self.isRecordingCommandModeShortcut {
-                        self.commandModeHotkeyShortcut = newShortcut
-                        SettingsStore.shared.commandModeHotkeyShortcut = newShortcut
-                        self.hotkeyManager?.updateCommandModeShortcut(newShortcut)
-                        self.isRecordingCommandModeShortcut = false
-                    } else {
-                        self.hotkeyShortcut = newShortcut
-                        SettingsStore.shared.hotkeyShortcut = newShortcut
-                        self.hotkeyManager?.updateShortcut(newShortcut)
-                        self.isRecordingShortcut = false
+                    if let recordingTarget,
+                       let conflictMessage = self.shortcutConflictMessage(for: newShortcut, target: recordingTarget)
+                    {
+                        self.shortcutRecordingMessage = conflictMessage
+                        self.resetPendingShortcutState()
+                        DebugLogger.shared.debug("NSEvent monitor: Shortcut conflict while recording: \(conflictMessage)", source: "ContentView")
+                        return nil
+                    }
+
+                    self.shortcutRecordingMessage = nil
+                    if let recordingTarget {
+                        self.assignRecordedShortcut(newShortcut, to: recordingTarget)
                     }
                     self.resetPendingShortcutState()
                     DebugLogger.shared.debug("NSEvent monitor: Finished recording shortcut", source: "ContentView")
                     return nil
                 } else if event.type == .flagsChanged {
-                    if self.hotkeyShortcut.modifierFlags.isEmpty {
-                        let isModifierKeyPressed = eventModifiers.isEmpty == false
-                        if event.keyCode == self.hotkeyShortcut.keyCode && isModifierKeyPressed {
-                            DebugLogger.shared.debug("NSEvent monitor: Global hotkey matched on flagsChanged, passing event through (GlobalHotkeyManager handles)", source: "ContentView")
-                            return event
-                        }
-                    }
-
                     guard isRecordingAnyShortcut else {
+                        self.shortcutRecordingMessage = nil
                         self.resetPendingShortcutState()
                         return event
                     }
@@ -451,30 +425,18 @@ struct ContentView: View {
                             let newShortcut = HotkeyShortcut(keyCode: modifierKeyCode, modifierFlags: [])
                             DebugLogger.shared.debug("NSEvent monitor: Recording modifier-only shortcut: \(newShortcut.displayString)", source: "ContentView")
 
-                            if self.isRecordingRewriteShortcut {
-                                self.rewriteModeHotkeyShortcut = newShortcut
-                                SettingsStore.shared.rewriteModeHotkeyShortcut = newShortcut
-                                self.hotkeyManager?.updateRewriteModeShortcut(newShortcut)
-                                self.isRecordingRewriteShortcut = false
-                            } else if self.isRecordingCancelShortcut {
-                                self.cancelRecordingHotkeyShortcut = newShortcut
-                                SettingsStore.shared.cancelRecordingHotkeyShortcut = newShortcut
-                                self.isRecordingCancelShortcut = false
-                            } else if self.isRecordingPromptModeShortcut {
-                                self.promptModeHotkeyShortcut = newShortcut
-                                SettingsStore.shared.promptModeHotkeyShortcut = newShortcut
-                                self.hotkeyManager?.updatePromptModeShortcut(newShortcut)
-                                self.isRecordingPromptModeShortcut = false
-                            } else if self.isRecordingCommandModeShortcut {
-                                self.commandModeHotkeyShortcut = newShortcut
-                                SettingsStore.shared.commandModeHotkeyShortcut = newShortcut
-                                self.hotkeyManager?.updateCommandModeShortcut(newShortcut)
-                                self.isRecordingCommandModeShortcut = false
-                            } else {
-                                self.hotkeyShortcut = newShortcut
-                                SettingsStore.shared.hotkeyShortcut = newShortcut
-                                self.hotkeyManager?.updateShortcut(newShortcut)
-                                self.isRecordingShortcut = false
+                            if let recordingTarget,
+                               let conflictMessage = self.shortcutConflictMessage(for: newShortcut, target: recordingTarget)
+                            {
+                                self.shortcutRecordingMessage = conflictMessage
+                                self.resetPendingShortcutState()
+                                DebugLogger.shared.debug("NSEvent monitor: Modifier shortcut conflict while recording: \(conflictMessage)", source: "ContentView")
+                                return nil
+                            }
+
+                            self.shortcutRecordingMessage = nil
+                            if let recordingTarget {
+                                self.assignRecordedShortcut(newShortcut, to: recordingTarget)
                             }
                             self.resetPendingShortcutState()
                             DebugLogger.shared.debug("NSEvent monitor: Finished recording modifier shortcut", source: "ContentView")
@@ -779,6 +741,80 @@ struct ContentView: View {
         self.pendingModifierFlags = []
         self.pendingModifierKeyCode = nil
         self.pendingModifierOnly = false
+    }
+
+    private enum ShortcutRecordingTarget {
+        case primaryDictation
+        case secondaryDictation
+        case command
+        case edit
+        case cancel
+    }
+
+    private func currentShortcutRecordingTarget() -> ShortcutRecordingTarget? {
+        if self.isRecordingShortcut { return .primaryDictation }
+        if self.isRecordingPromptModeShortcut { return .secondaryDictation }
+        if self.isRecordingCommandModeShortcut { return .command }
+        if self.isRecordingRewriteShortcut { return .edit }
+        if self.isRecordingCancelShortcut { return .cancel }
+        return nil
+    }
+
+    private func shortcutConflictMessage(for shortcut: HotkeyShortcut, target: ShortcutRecordingTarget) -> String? {
+        let configuredShortcuts: [(ShortcutRecordingTarget, String, HotkeyShortcut)] = [
+            (.primaryDictation, "Primary Dictation Shortcut", self.hotkeyShortcut),
+            (.secondaryDictation, "Secondary Dictation Shortcut", self.promptModeHotkeyShortcut),
+            (.command, "Command Mode", self.commandModeHotkeyShortcut),
+            (.edit, "Edit Mode", self.rewriteModeHotkeyShortcut),
+            (.cancel, "Cancel Recording", self.cancelRecordingHotkeyShortcut),
+        ]
+
+        for (otherTarget, title, configuredShortcut) in configuredShortcuts where otherTarget != target {
+            if configuredShortcut == shortcut {
+                return "Duplicate with \(title)"
+            }
+        }
+
+        return nil
+    }
+
+    private func assignRecordedShortcut(_ shortcut: HotkeyShortcut, to target: ShortcutRecordingTarget) {
+        switch target {
+        case .primaryDictation:
+            self.hotkeyShortcut = shortcut
+            SettingsStore.shared.hotkeyShortcut = shortcut
+            self.hotkeyManager?.updateShortcut(shortcut)
+            self.isRecordingShortcut = false
+        case .secondaryDictation:
+            self.promptModeHotkeyShortcut = shortcut
+            SettingsStore.shared.promptModeHotkeyShortcut = shortcut
+            self.hotkeyManager?.updatePromptModeShortcut(shortcut)
+            self.isRecordingPromptModeShortcut = false
+        case .command:
+            self.commandModeHotkeyShortcut = shortcut
+            SettingsStore.shared.commandModeHotkeyShortcut = shortcut
+            self.hotkeyManager?.updateCommandModeShortcut(shortcut)
+            self.isRecordingCommandModeShortcut = false
+        case .edit:
+            self.rewriteModeHotkeyShortcut = shortcut
+            SettingsStore.shared.rewriteModeHotkeyShortcut = shortcut
+            self.hotkeyManager?.updateRewriteModeShortcut(shortcut)
+            self.isRecordingRewriteShortcut = false
+        case .cancel:
+            self.cancelRecordingHotkeyShortcut = shortcut
+            SettingsStore.shared.cancelRecordingHotkeyShortcut = shortcut
+            self.isRecordingCancelShortcut = false
+        }
+    }
+
+    private func clearShortcutRecordingMode() {
+        self.isRecordingShortcut = false
+        self.isRecordingPromptModeShortcut = false
+        self.isRecordingCommandModeShortcut = false
+        self.isRecordingRewriteShortcut = false
+        self.isRecordingCancelShortcut = false
+        self.shortcutRecordingMessage = nil
+        self.resetPendingShortcutState()
     }
 
     private func openIssueReportingPage() {
@@ -1122,6 +1158,7 @@ struct ContentView: View {
             accessibilityEnabled: self.$accessibilityEnabled,
             hotkeyShortcut: self.$hotkeyShortcut,
             isRecordingShortcut: self.$isRecordingShortcut,
+            shortcutRecordingMessage: self.$shortcutRecordingMessage,
             promptModeShortcut: self.$promptModeHotkeyShortcut,
             isRecordingPromptModeShortcut: self.$isRecordingPromptModeShortcut,
             promptModeShortcutEnabled: self.$isPromptModeShortcutEnabled,
@@ -2472,6 +2509,13 @@ struct ContentView: View {
             },
             isRewriteRecordingProvider: {
                 self.activeRecordingMode == .edit
+            },
+            isShortcutCaptureActiveProvider: {
+                self.isRecordingShortcut ||
+                    self.isRecordingPromptModeShortcut ||
+                    self.isRecordingCommandModeShortcut ||
+                    self.isRecordingRewriteShortcut ||
+                    self.isRecordingCancelShortcut
             }
         )
 

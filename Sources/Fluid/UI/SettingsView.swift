@@ -28,6 +28,7 @@ struct SettingsView: View {
     @Binding var accessibilityEnabled: Bool
     @Binding var hotkeyShortcut: HotkeyShortcut
     @Binding var isRecordingShortcut: Bool
+    @Binding var shortcutRecordingMessage: String?
     @Binding var promptModeShortcut: HotkeyShortcut
     @Binding var isRecordingPromptModeShortcut: Bool
     @Binding var promptModeShortcutEnabled: Bool
@@ -630,8 +631,10 @@ struct SettingsView: View {
                                         description: "Defaults to raw transcription, but can use Off, Default, or any custom prompt.",
                                         shortcut: self.hotkeyShortcut,
                                         isRecording: self.isRecordingShortcut,
+                                        recordingMessage: self.isRecordingShortcut ? self.shortcutRecordingMessage : nil,
                                         onChangePressed: {
                                             DebugLogger.shared.debug("Starting to record new transcribe shortcut", source: "SettingsView")
+                                            self.shortcutRecordingMessage = nil
                                             self.isRecordingShortcut = true
                                         }
                                     )
@@ -645,9 +648,11 @@ struct SettingsView: View {
                                         description: "Defaults to Default cleanup, but can use Off, Default, or any custom prompt.",
                                         shortcut: self.promptModeShortcut,
                                         isRecording: self.isRecordingPromptModeShortcut,
+                                        recordingMessage: self.isRecordingPromptModeShortcut ? self.shortcutRecordingMessage : nil,
                                         isEnabled: self.$promptModeShortcutEnabled,
                                         onChangePressed: {
                                             DebugLogger.shared.debug("Starting to record new prompt mode shortcut", source: "SettingsView")
+                                            self.shortcutRecordingMessage = nil
                                             self.isRecordingPromptModeShortcut = true
                                         }
                                     )
@@ -665,9 +670,11 @@ struct SettingsView: View {
                                         description: "Execute voice commands",
                                         shortcut: self.commandModeShortcut,
                                         isRecording: self.isRecordingCommandModeShortcut,
+                                        recordingMessage: self.isRecordingCommandModeShortcut ? self.shortcutRecordingMessage : nil,
                                         isEnabled: self.$commandModeShortcutEnabled,
                                         onChangePressed: {
                                             DebugLogger.shared.debug("Starting to record new command mode shortcut", source: "SettingsView")
+                                            self.shortcutRecordingMessage = nil
                                             self.isRecordingCommandModeShortcut = true
                                         }
                                     )
@@ -680,9 +687,11 @@ struct SettingsView: View {
                                         description: "Select text and speak how to edit, or generate new content",
                                         shortcut: self.rewriteShortcut,
                                         isRecording: self.isRecordingRewriteShortcut,
+                                        recordingMessage: self.isRecordingRewriteShortcut ? self.shortcutRecordingMessage : nil,
                                         isEnabled: self.$rewriteShortcutEnabled,
                                         onChangePressed: {
                                             DebugLogger.shared.debug("Starting to record new write mode shortcut", source: "SettingsView")
+                                            self.shortcutRecordingMessage = nil
                                             self.isRecordingRewriteShortcut = true
                                         }
                                     )
@@ -695,8 +704,10 @@ struct SettingsView: View {
                                         description: "Cancel the current recording or dismiss the active recording overlay",
                                         shortcut: self.cancelRecordingShortcut,
                                         isRecording: self.isRecordingCancelShortcut,
+                                        recordingMessage: self.isRecordingCancelShortcut ? self.shortcutRecordingMessage : nil,
                                         onChangePressed: {
                                             DebugLogger.shared.debug("Starting to record new cancel shortcut", source: "SettingsView")
+                                            self.shortcutRecordingMessage = nil
                                             self.isRecordingCancelShortcut = true
                                         }
                                     )
@@ -1683,6 +1694,7 @@ struct SettingsView: View {
         description: String,
         shortcut: HotkeyShortcut,
         isRecording: Bool,
+        recordingMessage: String? = nil,
         isEnabled: Binding<Bool>? = nil,
         onChangePressed: @escaping () -> Void
     ) -> some View {
@@ -1748,6 +1760,12 @@ struct SettingsView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(isRecording || !enabledValue)
+
+                if isRecording, let recordingMessage, !recordingMessage.isEmpty {
+                    Text(recordingMessage)
+                        .font(.caption)
+                        .foregroundStyle(self.theme.palette.warning)
+                }
             }
         }
         .opacity(enabledValue ? 1 : 0.7)
