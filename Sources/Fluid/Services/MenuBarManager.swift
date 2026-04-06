@@ -8,7 +8,7 @@ enum MenuBarNavigationDestination: String {
 }
 
 @MainActor
-final class MenuBarManager: ObservableObject {
+final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var menu: NSMenu?
     private var isSetup: Bool = false
@@ -17,6 +17,8 @@ final class MenuBarManager: ObservableObject {
     // Cached menu items to avoid rebuilding entire menu
     private var statusMenuItem: NSMenuItem?
     private var rollbackMenuItem: NSMenuItem?
+    private var microphoneMenuItem: NSMenuItem?
+    private var microphoneSubmenu: NSMenu?
 
     // References to app state
     private weak var asrService: ASRService?
@@ -46,7 +48,8 @@ final class MenuBarManager: ObservableObject {
     // Subscription for forwarding audio levels to expanded command notch
     private var expandedModeAudioSubscription: AnyCancellable?
 
-    init() {
+    override init() {
+        super.init()
         // Don't setup menu bar immediately - defer until app is ready
     }
 
@@ -242,15 +245,6 @@ final class MenuBarManager: ObservableObject {
     }
 
     private func setupMenuBarSafely() {
-        // Check if window server connection is available
-        guard NSApp.isActive || NSApp.isRunning else {
-            // Retry after a short delay if app isn't ready
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.setupMenuBarSafely()
-            }
-            return
-        }
-
         do {
             try self.setupMenuBar()
             self.isSetup = true
@@ -279,6 +273,7 @@ final class MenuBarManager: ObservableObject {
 
         // Create menu
         self.menu = NSMenu()
+        self.menu?.delegate = self
         statusItem.menu = self.menu
 
         self.updateMenu()
@@ -318,6 +313,13 @@ final class MenuBarManager: ObservableObject {
         preferencesItem.target = self
         preferencesItem.keyEquivalentModifierMask = [.command]
         menu.addItem(preferencesItem)
+
+        let microphoneSubmenu = NSMenu(title: "Microphone")
+        let microphoneMenuItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
+        microphoneMenuItem.submenu = microphoneSubmenu
+        menu.addItem(microphoneMenuItem)
+        self.microphoneMenuItem = microphoneMenuItem
+        self.microphoneSubmenu = microphoneSubmenu
 
         // Check for Updates
         let updateItem = NSMenuItem(
@@ -371,9 +373,89 @@ final class MenuBarManager: ObservableObject {
         let hotkeyInfo = hotkeyShortcut.displayString.isEmpty ? "" : " (\(hotkeyShortcut.displayString))"
         let statusTitle = self.isRecording ? "Recording...\(hotkeyInfo)" : "Ready to Record\(hotkeyInfo)"
         self.statusMenuItem?.title = statusTitle
+        self.microphoneMenuItem?.isEnabled = true
 
         // Update rollback availability text
         self.rollbackMenuItem?.isEnabled = SimpleUpdater.shared.hasRollbackBackup()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        if menu === self.menu {
+            self.updateMenuItemsText()
+            self.refreshMicrophoneMenu()
+        }
+    }
+
+    private func refreshMicrophoneMenu() {
+        guard let submenu = self.microphoneSubmenu else { return }
+
+        submenu.removeAllItems()
+        let loadingItem = NSMenuItem(title: "Loading...", action: nil, keyEquivalent: "")
+        loadingItem.isEnabled = false
+        submenu.addItem(loadingItem)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let inputDevices = AudioDevice.listInputDevices()
+            let defaultInputUID = AudioDevice.getDefaultInputDevice()?.uid
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.populateMicrophoneMenu(
+                    inputDevices: inputDevices,
+                    defaultInputUID: defaultInputUID
+                )
+            }
+        }
+    }
+
+    private func populateMicrophoneMenu(inputDevices: [AudioDevice.Device], defaultInputUID: String?) {
+        guard let submenu = self.microphoneSubmenu else { return }
+
+        submenu.removeAllItems()
+
+        guard !inputDevices.isEmpty else {
+            let emptyItem = NSMenuItem(title: "No microphones found", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            submenu.addItem(emptyItem)
+            return
+        }
+
+        let currentUID = self.currentPreferredInputUID(defaultInputUID: defaultInputUID)
+
+        for device in inputDevices {
+            let isSystemDefault = device.uid == defaultInputUID
+            let title = isSystemDefault ? "\(device.name) (System Default)" : device.name
+            let item = NSMenuItem(title: title, action: #selector(selectMicrophone(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = device.uid
+            item.state = device.uid == currentUID ? .on : .off
+            item.isEnabled = !self.isRecording
+            submenu.addItem(item)
+        }
+
+        if self.isRecording {
+            submenu.addItem(.separator())
+            let recordingItem = NSMenuItem(title: "Unavailable while recording", action: nil, keyEquivalent: "")
+            recordingItem.isEnabled = false
+            submenu.addItem(recordingItem)
+        }
+    }
+
+    private func currentPreferredInputUID(defaultInputUID: String?) -> String? {
+        return defaultInputUID
+    }
+
+    @objc private func selectMicrophone(_ sender: NSMenuItem) {
+        guard self.isRecording == false else { return }
+        guard let uid = sender.representedObject as? String, !uid.isEmpty else { return }
+
+        SettingsStore.shared.preferredInputDeviceUID = uid
+
+        if SettingsStore.shared.syncAudioDevicesWithSystem {
+            _ = AudioDevice.setDefaultInputDevice(uid: uid)
+        }
+
+        self.refreshMicrophoneMenu()
     }
 
     @objc private func checkForUpdates(_ sender: Any?) {

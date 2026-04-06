@@ -177,6 +177,16 @@ final class TranscriptionHistoryStore: ObservableObject {
         self.entries.filter { $0.wasAIProcessed }.count
     }
 
+    func makeBackupPayload() -> [TranscriptionHistoryEntry] {
+        self.entries
+    }
+
+    func restore(from payload: [TranscriptionHistoryEntry]) {
+        self.entries = payload.sorted { $0.timestamp > $1.timestamp }
+        self.selectedEntryID = self.entries.first?.id
+        self.saveEntries()
+    }
+
     // MARK: - Private Methods
 
     private func loadEntries() {

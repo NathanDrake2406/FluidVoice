@@ -50,6 +50,7 @@ final class GlobalHotkeyManager: NSObject {
     private var isPromptModeRecordingProvider: (() -> Bool)?
     private var isCommandRecordingProvider: (() -> Bool)?
     private var isRewriteRecordingProvider: (() -> Bool)?
+    private var isShortcutCaptureActiveProvider: (() -> Bool)?
     private var cancelCallback: (() -> Bool)? // Returns true if handled
     private var pressAndHoldMode: Bool = SettingsStore.shared.pressAndHoldMode
 
@@ -129,7 +130,8 @@ final class GlobalHotkeyManager: NSObject {
         isDictateRecordingProvider: (() -> Bool)? = nil,
         isPromptModeRecordingProvider: (() -> Bool)? = nil,
         isCommandRecordingProvider: (() -> Bool)? = nil,
-        isRewriteRecordingProvider: (() -> Bool)? = nil
+        isRewriteRecordingProvider: (() -> Bool)? = nil,
+        isShortcutCaptureActiveProvider: (() -> Bool)? = nil
     ) {
         self.asrService = asrService
         self.shortcut = shortcut
@@ -149,6 +151,7 @@ final class GlobalHotkeyManager: NSObject {
         self.isPromptModeRecordingProvider = isPromptModeRecordingProvider
         self.isCommandRecordingProvider = isCommandRecordingProvider
         self.isRewriteRecordingProvider = isRewriteRecordingProvider
+        self.isShortcutCaptureActiveProvider = isShortcutCaptureActiveProvider
         super.init()
 
         self.initializeWithDelay()
@@ -330,26 +333,11 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     private func handleKeyEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // macOS can temporarily disable event taps (e.g. timeouts, user input protection).
-        // If we don't immediately re-enable here, hotkeys will silently stop working until our
-        // periodic health check kicks in, and the OS may handle the key (e.g. system dictation).
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            let reason = (type == .tapDisabledByTimeout) ? "timeout" : "user input"
-            DebugLogger.shared.warning("Event tap disabled by \(reason) — attempting immediate re-enable", source: "GlobalHotkeyManager")
+        if let tapRecoveryResult = self.handleTapDisableEvent(type: type, event: event) {
+            return tapRecoveryResult
+        }
 
-            if let tap = self.eventTap {
-                CGEvent.tapEnable(tap: tap, enable: true)
-            }
-
-            // If re-enable failed, recreate the tap.
-            if !self.isEventTapEnabled() {
-                DebugLogger.shared.warning("Event tap re-enable failed — recreating tap", source: "GlobalHotkeyManager")
-                self.setupGlobalHotkeyWithRetry()
-            }
-
-            // CRITICAL: Return the event to let it pass through during recovery.
-            // Previously returning nil would consume/block all keyboard events
-            // (including CGEvent text insertion) during the recovery period.
+        if self.isShortcutCaptureActiveProvider?() ?? false {
             return Unmanaged.passUnretained(event)
         }
 
@@ -382,12 +370,12 @@ final class GlobalHotkeyManager: NSObject {
                 await PostTranscriptionEditTracker.shared.handleKeyDown(keyCode: keyCode, modifiers: eventModifiers)
             }
 
-            // Check Escape key first (keyCode 53) - cancels recording and closes mode views
-            if keyCode == 53, eventModifiers.isEmpty {
+            // Check the configured cancel shortcut first.
+            if SettingsStore.shared.cancelRecordingHotkeyShortcut.matches(keyCode: keyCode, modifiers: eventModifiers) {
                 var handled = false
 
                 if self.asrService.isRunning {
-                    DebugLogger.shared.info("Escape pressed - cancelling recording", source: "GlobalHotkeyManager")
+                    DebugLogger.shared.info("Cancel shortcut pressed - cancelling recording", source: "GlobalHotkeyManager")
                     Task { @MainActor in
                         await self.asrService.stopWithoutTranscription()
                     }
@@ -396,7 +384,7 @@ final class GlobalHotkeyManager: NSObject {
 
                 // Trigger cancel callback to close mode views / reset state
                 if let callback = cancelCallback, callback() {
-                    DebugLogger.shared.info("Escape pressed - cancel callback handled", source: "GlobalHotkeyManager")
+                    DebugLogger.shared.info("Cancel shortcut pressed - cancel callback handled", source: "GlobalHotkeyManager")
                     handled = true
                 }
 
@@ -784,6 +772,29 @@ final class GlobalHotkeyManager: NSObject {
 
         default:
             break
+        }
+
+        return Unmanaged.passUnretained(event)
+    }
+
+    private func handleTapDisableEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        // macOS can temporarily disable event taps (e.g. timeouts, user input protection).
+        // If we don't immediately re-enable here, hotkeys will silently stop working until our
+        // periodic health check kicks in, and the OS may handle the key (e.g. system dictation).
+        guard type == .tapDisabledByTimeout || type == .tapDisabledByUserInput else {
+            return nil
+        }
+
+        let reason = (type == .tapDisabledByTimeout) ? "timeout" : "user input"
+        DebugLogger.shared.warning("Event tap disabled by \(reason) — attempting immediate re-enable", source: "GlobalHotkeyManager")
+
+        if let tap = self.eventTap {
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
+
+        if !self.isEventTapEnabled() {
+            DebugLogger.shared.warning("Event tap re-enable failed — recreating tap", source: "GlobalHotkeyManager")
+            self.setupGlobalHotkeyWithRetry()
         }
 
         return Unmanaged.passUnretained(event)

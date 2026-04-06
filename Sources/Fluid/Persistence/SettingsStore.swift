@@ -16,6 +16,10 @@ final class SettingsStore: ObservableObject {
     static let defaultTranscriptionPreviewCharLimit = 150
     private let defaults = UserDefaults.standard
     private let keychain = KeychainService.shared
+    private(set) var launchAtStartupEnabled = false
+    private(set) var launchAtStartupErrorMessage: String?
+    private(set) var launchAtStartupStatusMessage =
+        "FluidVoice reflects the actual macOS login item state. Unsigned or development builds may fail to enable this."
 
     private init() {
         self.migrateTranscriptionStartSoundIfNeeded()
@@ -26,6 +30,7 @@ final class SettingsStore: ObservableObject {
         self.migrateLegacyDictationAIPreferenceIfNeeded()
         self.normalizePromptSelectionsIfNeeded()
         self.migrateOverlayBottomOffsetTo50IfNeeded()
+        self.refreshLaunchAtStartupStatus(clearError: true, logMismatch: false)
     }
 
     // MARK: - Prompt Profiles (Unified)
@@ -80,6 +85,22 @@ final class SettingsStore: ObservableObject {
         func encode(to encoder: Encoder) throws {
             var container = encoder.singleValueContainer()
             try container.encode(self.normalized.rawValue)
+        }
+    }
+
+    enum DictationShortcutSlot: String, Codable, CaseIterable, Identifiable {
+        case primary
+        case secondary
+
+        var id: String { self.rawValue }
+
+        var displayName: String {
+            switch self {
+            case .primary:
+                return "Primary Dictation Shortcut"
+            case .secondary:
+                return "Secondary Dictation Shortcut"
+            }
         }
     }
 
@@ -282,26 +303,34 @@ final class SettingsStore: ObservableObject {
     }
 
     var dictationPromptSelection: DictationPromptSelection {
-        if self.isDictationPromptOff {
+        self.dictationPromptSelection(for: .primary)
+    }
+
+    func setDictationPromptSelection(_ selection: DictationPromptSelection) {
+        self.setDictationPromptSelection(selection, for: .primary)
+    }
+
+    func dictationPromptSelection(for slot: DictationShortcutSlot) -> DictationPromptSelection {
+        if self.isDictationPromptOff(for: slot) {
             return .off
         }
-        if let promptID = self.selectedDictationPromptID {
+        if let promptID = self.selectedDictationPromptID(for: slot) {
             return .profile(promptID)
         }
         return .default
     }
 
-    func setDictationPromptSelection(_ selection: DictationPromptSelection) {
+    func setDictationPromptSelection(_ selection: DictationPromptSelection, for slot: DictationShortcutSlot) {
         switch selection {
         case .off:
-            self.isDictationPromptOff = true
-            self.selectedDictationPromptID = nil
+            self.setDictationPromptOff(true, for: slot)
+            self.setSelectedDictationPromptID(nil, for: slot)
         case .default:
-            self.isDictationPromptOff = false
-            self.selectedDictationPromptID = nil
+            self.setDictationPromptOff(false, for: slot)
+            self.setSelectedDictationPromptID(nil, for: slot)
         case let .profile(promptID):
-            self.isDictationPromptOff = false
-            self.selectedDictationPromptID = promptID
+            self.setDictationPromptOff(false, for: slot)
+            self.setSelectedDictationPromptID(promptID, for: slot)
         }
     }
 
@@ -363,6 +392,86 @@ final class SettingsStore: ObservableObject {
             return self.selectedEditPromptID
         case .write, .rewrite:
             return self.selectedEditPromptID
+        }
+    }
+
+    func selectedDictationPromptID(for slot: DictationShortcutSlot) -> String? {
+        switch slot {
+        case .primary:
+            return self.selectedDictationPromptID
+        case .secondary:
+            return self.promptModeSelectedPromptID
+        }
+    }
+
+    func setSelectedDictationPromptID(_ id: String?, for slot: DictationShortcutSlot) {
+        switch slot {
+        case .primary:
+            self.selectedDictationPromptID = id
+        case .secondary:
+            self.promptModeSelectedPromptID = id
+        }
+    }
+
+    func isDictationPromptOff(for slot: DictationShortcutSlot) -> Bool {
+        switch slot {
+        case .primary:
+            return self.isDictationPromptOff
+        case .secondary:
+            return self.isSecondaryDictationPromptOff
+        }
+    }
+
+    func setDictationPromptOff(_ isOff: Bool, for slot: DictationShortcutSlot) {
+        switch slot {
+        case .primary:
+            self.isDictationPromptOff = isOff
+        case .secondary:
+            self.isSecondaryDictationPromptOff = isOff
+        }
+    }
+
+    func selectedDictationPromptProfile(for slot: DictationShortcutSlot) -> DictationPromptProfile? {
+        guard let id = self.selectedDictationPromptID(for: slot) else { return nil }
+        return self.dictationPromptProfiles.first(where: { $0.id == id && $0.mode.normalized == .dictate })
+    }
+
+    func resolvedDictationPromptProfile(for slot: DictationShortcutSlot, appBundleID: String?) -> DictationPromptProfile? {
+        switch self.dictationPromptSelection(for: slot) {
+        case .off:
+            return nil
+        case let .profile(promptID):
+            return self.dictationPromptProfiles.first(where: { $0.id == promptID && $0.mode.normalized == .dictate })
+        case .default:
+            guard let binding = self.appPromptBinding(for: .dictate, appBundleID: appBundleID) else { return nil }
+            let promptID = binding.promptID
+            return self.dictationPromptProfiles.first {
+                $0.id == promptID && $0.mode.normalized == .dictate
+            }
+        }
+    }
+
+    func isAppDictationPromptBindingActive(for slot: DictationShortcutSlot, appBundleID: String?) -> Bool {
+        guard self.dictationPromptSelection(for: slot) == .default else { return false }
+        return self.hasAppPromptBinding(for: .dictate, appBundleID: appBundleID)
+    }
+
+    func dictationPromptDisplayName(for slot: DictationShortcutSlot, appBundleID: String?) -> String {
+        switch self.dictationPromptSelection(for: slot) {
+        case .off:
+            return "Off"
+        case .default:
+            if let profile = self.resolvedDictationPromptProfile(for: slot, appBundleID: appBundleID) {
+                let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                return name.isEmpty ? "Untitled" : name
+            }
+            return "Default"
+        case let .profile(promptID):
+            guard let profile = self.dictationPromptProfiles.first(where: { $0.id == promptID && $0.mode.normalized == .dictate }) else {
+                return "Default"
+            }
+            let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? "Untitled" : name
         }
     }
 
@@ -797,6 +906,40 @@ final class SettingsStore: ObservableObject {
         self.promptResolution(for: mode, appBundleID: appBundleID).profile
     }
 
+    func effectiveDictationPromptBody(for slot: DictationShortcutSlot, appBundleID: String? = nil) -> String {
+        switch self.dictationPromptSelection(for: slot) {
+        case .off:
+            return ""
+        case .default:
+            return self.effectivePromptBody(for: .dictate, appBundleID: appBundleID)
+        case let .profile(promptID):
+            guard let profile = self.dictationPromptProfiles.first(where: { $0.id == promptID && $0.mode.normalized == .dictate }) else {
+                return self.effectivePromptBody(for: .dictate, appBundleID: appBundleID)
+            }
+            let body = Self.stripBasePrompt(for: .dictate, from: profile.prompt)
+            if !body.isEmpty {
+                return body
+            }
+            return self.effectivePromptBody(for: .dictate, appBundleID: appBundleID)
+        }
+    }
+
+    func effectiveDictationSystemPrompt(for slot: DictationShortcutSlot, appBundleID: String? = nil) -> String {
+        switch self.dictationPromptSelection(for: slot) {
+        case .off, .default:
+            return self.effectiveSystemPrompt(for: .dictate, appBundleID: appBundleID)
+        case let .profile(promptID):
+            guard let profile = self.dictationPromptProfiles.first(where: { $0.id == promptID && $0.mode.normalized == .dictate }) else {
+                return self.effectiveSystemPrompt(for: .dictate, appBundleID: appBundleID)
+            }
+            let body = Self.stripBasePrompt(for: .dictate, from: profile.prompt)
+            if !body.isEmpty {
+                return Self.combineBasePrompt(for: .dictate, with: body)
+            }
+            return self.effectiveSystemPrompt(for: .dictate, appBundleID: appBundleID)
+        }
+    }
+
     func effectivePromptBody(for mode: PromptMode, appBundleID: String? = nil) -> String {
         self.promptResolution(for: mode, appBundleID: appBundleID).promptBody
     }
@@ -1162,7 +1305,7 @@ final class SettingsStore: ObservableObject {
     // MARK: - Overlay Position
 
     /// Size options for the recording overlay
-    enum OverlaySize: String, CaseIterable {
+    enum OverlaySize: String, CaseIterable, Codable {
         case small
         case medium
         case large
@@ -1177,7 +1320,7 @@ final class SettingsStore: ObservableObject {
     }
 
     /// Position options for the recording overlay
-    enum OverlayPosition: String, CaseIterable {
+    enum OverlayPosition: String, CaseIterable, Codable {
         case top // Top of screen (notch area or floating)
         case bottom // Bottom of screen
 
@@ -1273,7 +1416,7 @@ final class SettingsStore: ObservableObject {
 
     // MARK: - Preferences Settings
 
-    enum AccentColorOption: String, CaseIterable, Identifiable {
+    enum AccentColorOption: String, CaseIterable, Identifiable, Codable {
         case cyan = "Cyan"
         case green = "Green"
         case blue = "Blue"
@@ -1295,7 +1438,7 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    enum TranscriptionStartSound: String, CaseIterable, Identifiable {
+    enum TranscriptionStartSound: String, CaseIterable, Identifiable, Codable {
         case none
         case fluidSfx1 = "fluid_sfx_1"
         case fluidSfx2 = "fluid_sfx_2"
@@ -1397,11 +1540,9 @@ final class SettingsStore: ObservableObject {
     }
 
     var launchAtStartup: Bool {
-        get { self.defaults.bool(forKey: Keys.launchAtStartup) }
+        get { self.launchAtStartupEnabled }
         set {
-            self.defaults.set(newValue, forKey: Keys.launchAtStartup)
-            // Update launch agent registration
-            self.updateLaunchAtStartup(newValue)
+            self.setLaunchAtStartup(newValue)
         }
     }
 
@@ -1409,6 +1550,8 @@ final class SettingsStore: ObservableObject {
 
     func initializeAppSettings() {
         #if os(macOS)
+        self.refreshLaunchAtStartupStatus(clearError: true)
+
         // Apply dock visibility setting on app launch
         let dockVisible = self.showInDock
         DebugLogger.shared.info("Initializing app with dock visibility: \(dockVisible)", source: "SettingsStore")
@@ -1687,6 +1830,17 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    var isSecondaryDictationPromptOff: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.secondaryDictationPromptOff)
+            return value as? Bool ?? false
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.secondaryDictationPromptOff)
+        }
+    }
+
     var commandModeShortcutEnabled: Bool {
         get {
             let value = self.defaults.object(forKey: Keys.commandModeShortcutEnabled)
@@ -1712,6 +1866,23 @@ final class SettingsStore: ObservableObject {
             objectWillChange.send()
             if let data = try? JSONEncoder().encode(newValue) {
                 self.defaults.set(data, forKey: Keys.commandModeHotkeyShortcut)
+            }
+        }
+    }
+
+    var cancelRecordingHotkeyShortcut: HotkeyShortcut {
+        get {
+            if let data = defaults.data(forKey: Keys.cancelRecordingHotkeyShortcut),
+               let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data)
+            {
+                return shortcut
+            }
+            return HotkeyShortcut(keyCode: 53, modifierFlags: [])
+        }
+        set {
+            objectWillChange.send()
+            if let data = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(data, forKey: Keys.cancelRecordingHotkeyShortcut)
             }
         }
     }
@@ -1959,6 +2130,144 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    func makeBackupPayload() -> SettingsBackupPayload {
+        SettingsBackupPayload(
+            selectedProviderID: self.selectedProviderID,
+            selectedModelByProvider: self.selectedModelByProvider,
+            savedProviders: self.savedProviders,
+            modelReasoningConfigs: self.modelReasoningConfigs,
+            selectedSpeechModel: self.selectedSpeechModel,
+            selectedCohereLanguage: self.selectedCohereLanguage,
+            hotkeyShortcut: self.hotkeyShortcut,
+            promptModeHotkeyShortcut: self.promptModeHotkeyShortcut,
+            promptModeShortcutEnabled: self.promptModeShortcutEnabled,
+            promptModeSelectedPromptID: self.promptModeSelectedPromptID,
+            secondaryDictationPromptOff: self.isSecondaryDictationPromptOff,
+            commandModeHotkeyShortcut: self.commandModeHotkeyShortcut,
+            commandModeShortcutEnabled: self.commandModeShortcutEnabled,
+            commandModeSelectedModel: self.commandModeSelectedModel,
+            commandModeSelectedProviderID: self.commandModeSelectedProviderID,
+            commandModeConfirmBeforeExecute: self.commandModeConfirmBeforeExecute,
+            commandModeLinkedToGlobal: self.commandModeLinkedToGlobal,
+            rewriteModeHotkeyShortcut: self.rewriteModeHotkeyShortcut,
+            rewriteModeShortcutEnabled: self.rewriteModeShortcutEnabled,
+            rewriteModeSelectedModel: self.rewriteModeSelectedModel,
+            rewriteModeSelectedProviderID: self.rewriteModeSelectedProviderID,
+            rewriteModeLinkedToGlobal: self.rewriteModeLinkedToGlobal,
+            cancelRecordingHotkeyShortcut: self.cancelRecordingHotkeyShortcut,
+            showThinkingTokens: self.showThinkingTokens,
+            hideFromDockAndAppSwitcher: self.hideFromDockAndAppSwitcher,
+            accentColorOption: self.accentColorOption,
+            transcriptionStartSound: self.transcriptionStartSound,
+            transcriptionSoundVolume: self.transcriptionSoundVolume,
+            transcriptionSoundIndependentVolume: self.transcriptionSoundIndependentVolume,
+            autoUpdateCheckEnabled: self.autoUpdateCheckEnabled,
+            betaReleasesEnabled: self.betaReleasesEnabled,
+            enableDebugLogs: self.enableDebugLogs,
+            shareAnonymousAnalytics: self.shareAnonymousAnalytics,
+            pressAndHoldMode: self.pressAndHoldMode,
+            enableStreamingPreview: self.enableStreamingPreview,
+            enableAIStreaming: self.enableAIStreaming,
+            copyTranscriptionToClipboard: self.copyTranscriptionToClipboard,
+            textInsertionMode: self.textInsertionMode,
+            preferredInputDeviceUID: self.preferredInputDeviceUID,
+            preferredOutputDeviceUID: self.preferredOutputDeviceUID,
+            visualizerNoiseThreshold: self.visualizerNoiseThreshold,
+            overlayPosition: self.overlayPosition,
+            overlayBottomOffset: self.overlayBottomOffset,
+            overlaySize: self.overlaySize,
+            transcriptionPreviewCharLimit: self.transcriptionPreviewCharLimit,
+            userTypingWPM: self.userTypingWPM,
+            saveTranscriptionHistory: self.saveTranscriptionHistory,
+            weekendsDontBreakStreak: self.weekendsDontBreakStreak,
+            fillerWords: self.fillerWords,
+            removeFillerWordsEnabled: self.removeFillerWordsEnabled,
+            gaavModeEnabled: self.gaavModeEnabled,
+            pauseMediaDuringTranscription: self.pauseMediaDuringTranscription,
+            vocabularyBoostingEnabled: self.vocabularyBoostingEnabled,
+            customDictionaryEntries: self.customDictionaryEntries,
+            selectedDictationPromptID: self.selectedDictationPromptID,
+            dictationPromptOff: self.isDictationPromptOff,
+            selectedEditPromptID: self.selectedEditPromptID,
+            defaultDictationPromptOverride: self.defaultDictationPromptOverride,
+            defaultEditPromptOverride: self.defaultEditPromptOverride
+        )
+    }
+
+    func restore(from payload: SettingsBackupPayload) {
+        self.restore(from: payload, promptProfiles: self.dictationPromptProfiles, appPromptBindings: self.appPromptBindings)
+    }
+
+    func restore(
+        from payload: SettingsBackupPayload,
+        promptProfiles: [DictationPromptProfile],
+        appPromptBindings: [AppPromptBinding]
+    ) {
+        self.savedProviders = payload.savedProviders
+        self.selectedProviderID = payload.selectedProviderID
+        self.selectedModelByProvider = payload.selectedModelByProvider
+        self.modelReasoningConfigs = payload.modelReasoningConfigs
+        self.selectedSpeechModel = payload.selectedSpeechModel
+        self.selectedCohereLanguage = payload.selectedCohereLanguage
+        self.hotkeyShortcut = payload.hotkeyShortcut
+        self.promptModeHotkeyShortcut = payload.promptModeHotkeyShortcut
+        self.promptModeShortcutEnabled = payload.promptModeShortcutEnabled
+        self.commandModeHotkeyShortcut = payload.commandModeHotkeyShortcut
+        self.commandModeShortcutEnabled = payload.commandModeShortcutEnabled
+        self.commandModeSelectedModel = payload.commandModeSelectedModel
+        self.commandModeSelectedProviderID = payload.commandModeSelectedProviderID
+        self.commandModeConfirmBeforeExecute = payload.commandModeConfirmBeforeExecute
+        self.commandModeLinkedToGlobal = payload.commandModeLinkedToGlobal
+        self.rewriteModeHotkeyShortcut = payload.rewriteModeHotkeyShortcut
+        self.rewriteModeShortcutEnabled = payload.rewriteModeShortcutEnabled
+        self.rewriteModeSelectedModel = payload.rewriteModeSelectedModel
+        self.rewriteModeSelectedProviderID = payload.rewriteModeSelectedProviderID
+        self.rewriteModeLinkedToGlobal = payload.rewriteModeLinkedToGlobal
+        self.cancelRecordingHotkeyShortcut = payload.cancelRecordingHotkeyShortcut
+        self.showThinkingTokens = payload.showThinkingTokens
+        self.hideFromDockAndAppSwitcher = payload.hideFromDockAndAppSwitcher
+        self.accentColorOption = payload.accentColorOption
+        self.transcriptionStartSound = payload.transcriptionStartSound
+        self.transcriptionSoundVolume = payload.transcriptionSoundVolume
+        self.transcriptionSoundIndependentVolume = payload.transcriptionSoundIndependentVolume
+        self.autoUpdateCheckEnabled = payload.autoUpdateCheckEnabled
+        self.betaReleasesEnabled = payload.betaReleasesEnabled
+        self.enableDebugLogs = payload.enableDebugLogs
+        self.shareAnonymousAnalytics = payload.shareAnonymousAnalytics
+        self.pressAndHoldMode = payload.pressAndHoldMode
+        self.enableStreamingPreview = payload.enableStreamingPreview
+        self.enableAIStreaming = payload.enableAIStreaming
+        self.copyTranscriptionToClipboard = payload.copyTranscriptionToClipboard
+        self.textInsertionMode = payload.textInsertionMode
+        self.preferredInputDeviceUID = payload.preferredInputDeviceUID
+        self.preferredOutputDeviceUID = payload.preferredOutputDeviceUID
+        self.visualizerNoiseThreshold = payload.visualizerNoiseThreshold
+        self.overlayPosition = payload.overlayPosition
+        self.overlayBottomOffset = payload.overlayBottomOffset
+        self.overlaySize = payload.overlaySize
+        self.transcriptionPreviewCharLimit = payload.transcriptionPreviewCharLimit
+        self.userTypingWPM = payload.userTypingWPM
+        self.saveTranscriptionHistory = payload.saveTranscriptionHistory
+        self.weekendsDontBreakStreak = payload.weekendsDontBreakStreak
+        self.fillerWords = payload.fillerWords
+        self.removeFillerWordsEnabled = payload.removeFillerWordsEnabled
+        self.gaavModeEnabled = payload.gaavModeEnabled
+        self.pauseMediaDuringTranscription = payload.pauseMediaDuringTranscription
+        self.vocabularyBoostingEnabled = payload.vocabularyBoostingEnabled
+        self.customDictionaryEntries = payload.customDictionaryEntries
+
+        self.dictationPromptProfiles = promptProfiles
+        self.appPromptBindings = appPromptBindings
+        self.selectedDictationPromptID = payload.selectedDictationPromptID
+        self.isDictationPromptOff = payload.dictationPromptOff ?? self.isDictationPromptOff
+        self.selectedEditPromptID = payload.selectedEditPromptID
+        self.defaultDictationPromptOverride = payload.defaultDictationPromptOverride
+        self.defaultEditPromptOverride = payload.defaultEditPromptOverride
+        self.promptModeSelectedPromptID = payload.promptModeSelectedPromptID
+        self.isSecondaryDictationPromptOff = payload.secondaryDictationPromptOff ?? false
+        self.normalizePromptSelectionsIfNeeded()
+    }
+
     // MARK: - Private Methods
 
     private func persistProviderAPIKeys(_ values: [String: String]) {
@@ -2051,13 +2360,17 @@ final class SettingsStore: ObservableObject {
         } else if self.defaults.object(forKey: Keys.enableAIProcessing) != nil {
             shouldStartOff = !self.defaults.bool(forKey: Keys.enableAIProcessing)
         } else {
-            shouldStartOff = false
+            shouldStartOff = true
         }
 
         self.defaults.set(shouldStartOff, forKey: Keys.dictationPromptOff)
     }
 
     private func normalizePromptSelectionsIfNeeded() {
+        if self.defaults.object(forKey: Keys.secondaryDictationPromptOff) == nil {
+            self.defaults.set(false, forKey: Keys.secondaryDictationPromptOff)
+        }
+
         // One-time migration to unified edit keys.
         if self.defaults.object(forKey: Keys.selectedEditPromptID) == nil,
            let migratedSelectedEditID = self.selectedEditPromptID
@@ -2243,26 +2556,157 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    private func updateLaunchAtStartup(_ enabled: Bool) {
+    func refreshLaunchAtStartupStatus(clearError: Bool = false, logMismatch: Bool = true) {
         #if os(macOS)
-        // Note: SMAppService.mainApp requires the app to be signed with Developer ID
-        // and have proper entitlements. This may not work in development builds.
+        let persistedValue = self.defaults.bool(forKey: Keys.launchAtStartup)
+        let systemState = self.currentLaunchAtStartupSystemState()
+        let systemEnabled = systemState.isEnabled
+
+        if logMismatch, persistedValue != systemEnabled {
+            DebugLogger.shared.warning(
+                "Launch at startup preference mismatch. Stored: \(persistedValue), actual: \(systemEnabled). Preferring macOS state.",
+                source: "SettingsStore"
+            )
+        }
+
+        self.defaults.set(systemEnabled, forKey: Keys.launchAtStartup)
+
+        let nextErrorMessage = clearError ? nil : self.launchAtStartupErrorMessage
+        if self.launchAtStartupEnabled != systemEnabled ||
+            self.launchAtStartupStatusMessage != systemState.message ||
+            self.launchAtStartupErrorMessage != nextErrorMessage
+        {
+            objectWillChange.send()
+            self.launchAtStartupEnabled = systemEnabled
+            self.launchAtStartupStatusMessage = systemState.message
+            self.launchAtStartupErrorMessage = nextErrorMessage
+        }
+        #else
+        let unavailableMessage = "Launch at startup is only available on macOS."
+        let nextErrorMessage = clearError ? nil : self.launchAtStartupErrorMessage
+        if self.launchAtStartupEnabled ||
+            self.launchAtStartupStatusMessage != unavailableMessage ||
+            self.launchAtStartupErrorMessage != nextErrorMessage
+        {
+            objectWillChange.send()
+            self.launchAtStartupEnabled = false
+            self.launchAtStartupStatusMessage = unavailableMessage
+            self.launchAtStartupErrorMessage = nextErrorMessage
+        }
+        #endif
+    }
+
+    func setLaunchAtStartup(_ enabled: Bool) {
+        #if os(macOS)
         let service = SMAppService.mainApp
+        let statusBeforeChange = self.currentLaunchAtStartupSystemState()
+
+        if statusBeforeChange.isEnabled == enabled {
+            self.refreshLaunchAtStartupStatus(clearError: true, logMismatch: false)
+            return
+        }
 
         do {
             if enabled {
                 try service.register()
-                DebugLogger.shared.info("Successfully registered for launch at startup", source: "SettingsStore")
+                DebugLogger.shared.info("Requested registration for launch at startup", source: "SettingsStore")
             } else {
                 try service.unregister()
-                DebugLogger.shared.info("Successfully unregistered from launch at startup", source: "SettingsStore")
+                DebugLogger.shared.info("Requested unregistration from launch at startup", source: "SettingsStore")
+            }
+
+            self.refreshLaunchAtStartupStatus(clearError: true, logMismatch: false)
+
+            if self.launchAtStartupEnabled != enabled {
+                let fallbackMessage = enabled
+                    ? "macOS did not enable FluidVoice in Login Items. Unsigned or development builds may not support launch at startup."
+                    : "macOS still shows FluidVoice in Login Items. Check System Settings > General > Login Items."
+                objectWillChange.send()
+                self.launchAtStartupErrorMessage = fallbackMessage
+                DebugLogger.shared.warning(fallbackMessage, source: "SettingsStore")
             }
         } catch {
             DebugLogger.shared.error("Failed to update launch at startup: \(error)", source: "SettingsStore")
-            // In development, this is expected to fail without proper signing/entitlements
-            // The setting is still saved and will work when the app is properly signed
+            self.refreshLaunchAtStartupStatus(clearError: false, logMismatch: false)
+
+            let message = self.launchAtStartupFailureMessage(for: error, enabling: enabled)
+            if self.launchAtStartupErrorMessage != message {
+                objectWillChange.send()
+                self.launchAtStartupErrorMessage = message
+            }
+        }
+        #else
+        let message = "Launch at startup is only available on macOS."
+        if self.launchAtStartupErrorMessage != message {
+            objectWillChange.send()
+            self.launchAtStartupErrorMessage = message
         }
         #endif
+    }
+
+    #if os(macOS)
+    private func currentLaunchAtStartupSystemState() -> LaunchAtStartupSystemState {
+        let service = SMAppService.mainApp
+        switch service.status {
+        case .enabled:
+            return .enabled
+        case .requiresApproval:
+            return .requiresApproval
+        case .notFound:
+            return .disabled
+        case .notRegistered:
+            return .disabled
+        @unknown default:
+            return .disabled
+        }
+    }
+
+    private func launchAtStartupFailureMessage(for error: Error, enabling: Bool) -> String {
+        let nsError = error as NSError
+        let action = enabling ? "enable" : "disable"
+        let lowercasedDescription = nsError.localizedDescription.lowercased()
+
+        if lowercasedDescription.contains("developer") ||
+            lowercasedDescription.contains("sign") ||
+            lowercasedDescription.contains("entitlement")
+        {
+            return "FluidVoice could not \(action) launch at startup. This build may not be signed correctly for macOS Login Items."
+        }
+
+        if lowercasedDescription.contains("approval") ||
+            lowercasedDescription.contains("authorize")
+        {
+            return "macOS needs approval before FluidVoice can \(action) launch at startup. Check System Settings > General > Login Items."
+        }
+
+        return "FluidVoice could not \(action) launch at startup. macOS reported: \(nsError.localizedDescription)"
+    }
+    #endif
+
+    private enum LaunchAtStartupSystemState {
+        case enabled
+        case disabled
+        case requiresApproval
+
+        var isEnabled: Bool {
+            switch self {
+            case .enabled:
+                return true
+            case .disabled, .requiresApproval:
+                return false
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .enabled:
+                return "FluidVoice reflects the actual macOS login item state."
+            case .disabled:
+                return "FluidVoice reflects the actual macOS login item state. Unsigned or development builds may fail to enable this."
+            case .requiresApproval:
+                return "macOS requires approval for FluidVoice in Login Items before launch at startup becomes active."
+            }
+        }
     }
 
     private func updateDockVisibility(_ visible: Bool) {
@@ -3090,6 +3534,7 @@ private extension SettingsStore {
         static let commandModeSelectedProviderID = "CommandModeSelectedProviderID"
         static let commandModeHotkeyShortcut = "CommandModeHotkeyShortcut"
         static let commandModeConfirmBeforeExecute = "CommandModeConfirmBeforeExecute"
+        static let cancelRecordingHotkeyShortcut = "CancelRecordingHotkeyShortcut"
         static let commandModeLinkedToGlobal = "CommandModeLinkedToGlobal"
         static let commandModeShortcutEnabled = "CommandModeShortcutEnabled"
 
@@ -3097,6 +3542,7 @@ private extension SettingsStore {
         static let promptModeHotkeyShortcut = "PromptModeHotkeyShortcut"
         static let promptModeShortcutEnabled = "PromptModeShortcutEnabled"
         static let promptModeSelectedPromptID = "PromptModeSelectedPromptID"
+        static let secondaryDictationPromptOff = "SecondaryDictationPromptOff"
 
         // Rewrite Mode Keys
         static let rewriteModeHotkeyShortcut = "RewriteModeHotkeyShortcut"

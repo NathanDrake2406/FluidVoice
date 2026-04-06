@@ -5,9 +5,11 @@
 //  App preferences and audio device settings
 //
 
+import AppKit
 import AVFoundation
 import PromiseKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject var appServices: AppServices
@@ -26,6 +28,7 @@ struct SettingsView: View {
     @Binding var accessibilityEnabled: Bool
     @Binding var hotkeyShortcut: HotkeyShortcut
     @Binding var isRecordingShortcut: Bool
+    @Binding var shortcutRecordingMessage: String?
     @Binding var promptModeShortcut: HotkeyShortcut
     @Binding var isRecordingPromptModeShortcut: Bool
     @Binding var promptModeShortcutEnabled: Bool
@@ -33,6 +36,8 @@ struct SettingsView: View {
     @Binding var isRecordingCommandModeShortcut: Bool
     @Binding var rewriteShortcut: HotkeyShortcut
     @Binding var isRecordingRewriteShortcut: Bool
+    @Binding var cancelRecordingShortcut: HotkeyShortcut
+    @Binding var isRecordingCancelShortcut: Bool
     @Binding var commandModeShortcutEnabled: Bool
     @Binding var rewriteShortcutEnabled: Bool
     @Binding var hotkeyManagerInitialized: Bool
@@ -106,6 +111,59 @@ struct SettingsView: View {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
     }
 
+    private var launchAtStartupBinding: Binding<Bool> {
+        Binding(
+            get: { self.settings.launchAtStartupEnabled },
+            set: { self.settings.setLaunchAtStartup($0) }
+        )
+    }
+
+    private func dictationPromptSelectionBinding(for slot: SettingsStore.DictationShortcutSlot) -> Binding<String> {
+        Binding(
+            get: {
+                switch self.settings.dictationPromptSelection(for: slot) {
+                case .off:
+                    return "__OFF__"
+                case .default:
+                    return "__DEFAULT__"
+                case let .profile(id):
+                    return id
+                }
+            },
+            set: { newValue in
+                switch newValue {
+                case "__OFF__":
+                    self.settings.setDictationPromptSelection(.off, for: slot)
+                case "__DEFAULT__":
+                    self.settings.setDictationPromptSelection(.default, for: slot)
+                default:
+                    self.settings.setDictationPromptSelection(.profile(newValue), for: slot)
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func dictationPromptPicker(for slot: SettingsStore.DictationShortcutSlot) -> some View {
+        let profiles = self.settings.promptProfiles(for: .dictate)
+        HStack {
+            Text("AI Prompt")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 30)
+            Spacer()
+            Picker("", selection: self.dictationPromptSelectionBinding(for: slot)) {
+                Text("Off").tag("__OFF__")
+                Text("Default").tag("__DEFAULT__")
+                ForEach(profiles) { profile in
+                    Text(profile.name.isEmpty ? "Untitled" : profile.name).tag(profile.id)
+                }
+            }
+            .frame(width: 190)
+        }
+        .padding(.bottom, 4)
+    }
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 16) {
@@ -122,11 +180,9 @@ struct SettingsView: View {
                             self.settingsToggleRow(
                                 title: "Launch at startup",
                                 description: "Automatically start FluidVoice when you log in",
-                                footnote: "Note: Requires app to be signed for this to work.",
-                                isOn: Binding(
-                                    get: { SettingsStore.shared.launchAtStartup },
-                                    set: { SettingsStore.shared.launchAtStartup = $0 }
-                                )
+                                footnote: self.settings.launchAtStartupStatusMessage,
+                                errorMessage: self.settings.launchAtStartupErrorMessage,
+                                isOn: self.launchAtStartupBinding
                             )
                             Divider().opacity(0.2)
 
@@ -515,7 +571,7 @@ struct SettingsView: View {
                             Spacer()
 
                             if self.accessibilityEnabled {
-                                if self.isRecordingShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut {
+                                if self.isRecordingShortcut || self.isRecordingPromptModeShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut || self.isRecordingCancelShortcut {
                                     Text("Recording…")
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(.orange)
@@ -538,7 +594,7 @@ struct SettingsView: View {
 
                         if self.accessibilityEnabled {
                             VStack(alignment: .leading, spacing: 12) {
-                                if self.isRecordingShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut {
+                                if self.isRecordingShortcut || self.isRecordingPromptModeShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut || self.isRecordingCancelShortcut {
                                     HStack(spacing: 8) {
                                         Image(systemName: "hand.point.up.left.fill")
                                             .foregroundStyle(.orange)
@@ -564,64 +620,45 @@ struct SettingsView: View {
                                         .font(.subheadline.weight(.medium))
                                         .foregroundStyle(.secondary)
 
+                                    Text("Changes usually apply immediately. If a new shortcut does not respond, restart FluidVoice.")
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
+
                                     self.shortcutRow(
                                         icon: "mic.fill",
                                         iconColor: .secondary,
-                                        title: "Transcribe Mode",
-                                        description: "Dictate text anywhere",
+                                        title: "Primary Dictation Shortcut",
+                                        description: "Defaults to raw transcription, but can use Off, Default, or any custom prompt.",
                                         shortcut: self.hotkeyShortcut,
                                         isRecording: self.isRecordingShortcut,
+                                        recordingMessage: self.isRecordingShortcut ? self.shortcutRecordingMessage : nil,
                                         onChangePressed: {
                                             DebugLogger.shared.debug("Starting to record new transcribe shortcut", source: "SettingsView")
+                                            self.shortcutRecordingMessage = nil
                                             self.isRecordingShortcut = true
                                         }
                                     )
+                                    self.dictationPromptPicker(for: .primary)
                                     Divider().opacity(0.2).padding(.vertical, 4)
 
                                     self.shortcutRow(
                                         icon: "text.bubble.fill",
                                         iconColor: .secondary,
-                                        title: "Transcribe with Prompt",
-                                        description: "Dictate with a specific AI prompt",
+                                        title: "Secondary Dictation Shortcut",
+                                        description: "Defaults to Default cleanup, but can use Off, Default, or any custom prompt.",
                                         shortcut: self.promptModeShortcut,
                                         isRecording: self.isRecordingPromptModeShortcut,
+                                        recordingMessage: self.isRecordingPromptModeShortcut ? self.shortcutRecordingMessage : nil,
                                         isEnabled: self.$promptModeShortcutEnabled,
                                         onChangePressed: {
                                             DebugLogger.shared.debug("Starting to record new prompt mode shortcut", source: "SettingsView")
+                                            self.shortcutRecordingMessage = nil
                                             self.isRecordingPromptModeShortcut = true
                                         }
                                     )
 
                                     if self.promptModeShortcutEnabled {
-                                        let profiles = self.settings.promptProfiles(for: .dictate)
-                                        if !profiles.isEmpty {
-                                            HStack {
-                                                Text("Prompt")
-                                                    .font(.subheadline)
-                                                    .foregroundStyle(.secondary)
-                                                    .padding(.leading, 30)
-                                                Spacer()
-                                                Picker("", selection: Binding(
-                                                    get: { self.settings.promptModeSelectedPromptID ?? "" },
-                                                    set: { newValue in
-                                                        self.settings.promptModeSelectedPromptID = newValue.isEmpty ? nil : newValue
-                                                    }
-                                                )) {
-                                                    Text("Select a prompt...").tag("")
-                                                    ForEach(profiles) { profile in
-                                                        Text(profile.name.isEmpty ? "Untitled" : profile.name).tag(profile.id)
-                                                    }
-                                                }
-                                                .frame(width: 170)
-                                            }
-                                            .padding(.bottom, 4)
-                                        } else {
-                                            Text("Add prompts in AI Enhancements → Prompt Profiles")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .padding(.leading, 30)
-                                                .padding(.bottom, 4)
-                                        }
+                                        self.dictationPromptPicker(for: .secondary)
                                     }
 
                                     Divider().opacity(0.2).padding(.vertical, 4)
@@ -633,9 +670,11 @@ struct SettingsView: View {
                                         description: "Execute voice commands",
                                         shortcut: self.commandModeShortcut,
                                         isRecording: self.isRecordingCommandModeShortcut,
+                                        recordingMessage: self.isRecordingCommandModeShortcut ? self.shortcutRecordingMessage : nil,
                                         isEnabled: self.$commandModeShortcutEnabled,
                                         onChangePressed: {
                                             DebugLogger.shared.debug("Starting to record new command mode shortcut", source: "SettingsView")
+                                            self.shortcutRecordingMessage = nil
                                             self.isRecordingCommandModeShortcut = true
                                         }
                                     )
@@ -648,10 +687,28 @@ struct SettingsView: View {
                                         description: "Select text and speak how to edit, or generate new content",
                                         shortcut: self.rewriteShortcut,
                                         isRecording: self.isRecordingRewriteShortcut,
+                                        recordingMessage: self.isRecordingRewriteShortcut ? self.shortcutRecordingMessage : nil,
                                         isEnabled: self.$rewriteShortcutEnabled,
                                         onChangePressed: {
                                             DebugLogger.shared.debug("Starting to record new write mode shortcut", source: "SettingsView")
+                                            self.shortcutRecordingMessage = nil
                                             self.isRecordingRewriteShortcut = true
+                                        }
+                                    )
+                                    Divider().opacity(0.2).padding(.vertical, 4)
+
+                                    self.shortcutRow(
+                                        icon: "xmark.circle.fill",
+                                        iconColor: .secondary,
+                                        title: "Cancel Recording",
+                                        description: "Cancel the current recording or dismiss the active recording overlay",
+                                        shortcut: self.cancelRecordingShortcut,
+                                        isRecording: self.isRecordingCancelShortcut,
+                                        recordingMessage: self.isRecordingCancelShortcut ? self.shortcutRecordingMessage : nil,
+                                        onChangePressed: {
+                                            DebugLogger.shared.debug("Starting to record new cancel shortcut", source: "SettingsView")
+                                            self.shortcutRecordingMessage = nil
+                                            self.isRecordingCancelShortcut = true
                                         }
                                     )
                                 }
@@ -921,12 +978,8 @@ struct SettingsView: View {
                                     if !newDevices.isEmpty {
                                         let currentValid = newDevices.contains { $0.uid == self.selectedInputUID }
                                         if !currentValid {
-                                            if let prefUID = SettingsStore.shared.preferredInputDeviceUID,
-                                               newDevices.contains(where: { $0.uid == prefUID })
-                                            {
-                                                self.selectedInputUID = prefUID
-                                            } else if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid,
-                                                      newDevices.contains(where: { $0.uid == defaultUID })
+                                            if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid,
+                                               newDevices.contains(where: { $0.uid == defaultUID })
                                             {
                                                 self.selectedInputUID = defaultUID
                                             } else {
@@ -1194,6 +1247,12 @@ struct SettingsView: View {
                     .padding(16)
                 }
 
+                // Backup & Restore Card
+                ThemedCard(style: .standard) {
+                    self.backupUtilityRow()
+                        .padding(16)
+                }
+
                 // Debug Settings Card
                 ThemedCard(style: .standard) {
                     VStack(alignment: .leading, spacing: 14) {
@@ -1290,12 +1349,8 @@ struct SettingsView: View {
                 if !self.inputDevices.isEmpty {
                     let inputValid = self.inputDevices.contains { $0.uid == self.selectedInputUID }
                     if !inputValid || self.selectedInputUID.isEmpty {
-                        if let prefUID = SettingsStore.shared.preferredInputDeviceUID,
-                           self.inputDevices.contains(where: { $0.uid == prefUID })
-                        {
-                            self.selectedInputUID = prefUID
-                        } else if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid,
-                                  self.inputDevices.contains(where: { $0.uid == defaultUID })
+                        if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid,
+                           self.inputDevices.contains(where: { $0.uid == defaultUID })
                         {
                             self.selectedInputUID = defaultUID
                         } else {
@@ -1327,6 +1382,7 @@ struct SettingsView: View {
                 self.cachedDefaultInputName = AudioDevice.getDefaultInputDevice()?.name ?? ""
                 self.cachedDefaultOutputName = AudioDevice.getDefaultOutputDevice()?.name ?? ""
                 self.refreshRollbackState()
+                self.settings.refreshLaunchAtStartupStatus(clearError: true, logMismatch: false)
             }
         }
         .onChange(of: self.visualizerNoiseThreshold) { _, newValue in
@@ -1341,6 +1397,101 @@ struct SettingsView: View {
     private func openIssueReportingPage() {
         guard let url = URL(string: "https://github.com/altic-dev/Fluid-oss/issues/new/choose") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    private func exportBackup() {
+        do {
+            let panel = NSSavePanel()
+            panel.canCreateDirectories = true
+            panel.allowedContentTypes = [.json]
+            panel.nameFieldStringValue = BackupService.shared.suggestedFilename()
+
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+
+            let document = BackupService.shared.makeBackupDocument()
+            let data = try BackupService.shared.encode(document)
+            try data.write(to: url, options: .atomic)
+
+            self.presentInfoAlert(
+                title: "Backup Exported",
+                message: "Saved your FluidVoice backup to:\n\(url.path)"
+            )
+        } catch {
+            self.presentErrorAlert(
+                title: "Backup Export Failed",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private func importBackup() {
+        do {
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = false
+            panel.canChooseFiles = true
+            panel.allowsMultipleSelection = false
+            panel.allowedContentTypes = [.json]
+
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+
+            let data = try Data(contentsOf: url)
+            let document = try BackupService.shared.decode(data)
+
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .short
+
+            let confirm = NSAlert()
+            confirm.messageText = "Import this backup?"
+            confirm.informativeText = """
+            This replaces your current settings, prompt profiles, and stats history.
+
+            Exported: \(formatter.string(from: document.exportedAt))
+            API keys are not included and will not be changed.
+            """
+            confirm.alertStyle = .warning
+            confirm.addButton(withTitle: "Import")
+            confirm.addButton(withTitle: "Cancel")
+
+            guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+            try BackupService.shared.restore(document)
+            self.syncLocalSettingsAfterBackupRestore()
+
+            self.presentInfoAlert(
+                title: "Backup Imported",
+                message: "Your settings, prompt profiles, and stats were restored successfully."
+            )
+        } catch {
+            self.presentErrorAlert(
+                title: "Backup Import Failed",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private func syncLocalSettingsAfterBackupRestore() {
+        self.shareAnonymousAnalytics = SettingsStore.shared.shareAnonymousAnalytics
+        self.pendingAnalyticsValue = nil
+        self.showAreYouSureToStopAnalytics = false
+    }
+
+    private func presentInfoAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func presentErrorAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func openPreviousBuildPicker() {
@@ -1406,6 +1557,7 @@ struct SettingsView: View {
         title: String,
         description: String,
         footnote: String? = nil,
+        errorMessage: String? = nil,
         isOn: Binding<Bool>
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1430,6 +1582,46 @@ struct SettingsView: View {
                 Text(footnote)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+            }
+
+            if let errorMessage = errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(self.theme.palette.warning)
+            }
+        }
+    }
+
+    private func backupUtilityRow() -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "externaldrive.fill")
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .frame(width: 24, alignment: .center)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Backup & Restore")
+                    .font(.body)
+                Text("Export or import settings, prompt profiles, history, and stats. API keys excluded.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 16)
+
+            HStack(spacing: 8) {
+                Button(action: self.exportBackup) {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(self.theme.palette.accent)
+                .controlSize(.regular)
+
+                Button(action: self.importBackup) {
+                    Label("Import", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
             }
         }
     }
@@ -1502,6 +1694,7 @@ struct SettingsView: View {
         description: String,
         shortcut: HotkeyShortcut,
         isRecording: Bool,
+        recordingMessage: String? = nil,
         isEnabled: Binding<Bool>? = nil,
         onChangePressed: @escaping () -> Void
     ) -> some View {
@@ -1567,6 +1760,12 @@ struct SettingsView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(isRecording || !enabledValue)
+
+                if isRecording, let recordingMessage, !recordingMessage.isEmpty {
+                    Text(recordingMessage)
+                        .font(.caption)
+                        .foregroundStyle(self.theme.palette.warning)
+                }
             }
         }
         .opacity(enabledValue ? 1 : 0.7)

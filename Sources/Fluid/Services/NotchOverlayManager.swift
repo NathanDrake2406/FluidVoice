@@ -54,6 +54,7 @@ final class NotchOverlayManager {
 
     /// Track if bottom overlay is visible
     private(set) var isBottomOverlayVisible: Bool = false
+    var isOverlayVisible: Bool { self.state == .visible }
 
     // Callbacks for command output interaction
     var onCommandOutputDismiss: (() -> Void)?
@@ -73,7 +74,7 @@ final class NotchOverlayManager {
     /// Track pending retry task for cancellation
     private var pendingRetryTask: Task<Void, Never>?
 
-    // Escape key monitors for dismissing notch
+    // Cancel shortcut monitors for dismissing notch / overlay
     private var globalEscapeMonitor: Any?
     private var localEscapeMonitor: Any?
 
@@ -90,38 +91,25 @@ final class NotchOverlayManager {
         }
     }
 
-    /// Setup escape key monitors - both global (other apps) and local (our app)
+    /// Setup cancel shortcut monitors - both global (other apps) and local (our app)
     private func setupEscapeKeyMonitors() {
         let escapeHandler: (NSEvent) -> NSEvent? = { [weak self] event in
-            guard event.keyCode == 53 else { return event } // Escape key
+            guard SettingsStore.shared.cancelRecordingHotkeyShortcut.matches(
+                keyCode: event.keyCode,
+                modifiers: event.modifierFlags
+            ) else { return event }
 
             Task { @MainActor in
-                guard let self = self else { return }
-
-                // If expanded command output is showing, hide it
-                if self.isCommandOutputExpanded {
-                    self.hideExpandedCommandOutput()
-                    self.onCommandOutputDismiss?()
-                }
-                // Hide bottom overlay if visible
-                else if self.isBottomOverlayVisible {
-                    self.hide()
-                }
-                // Hide regular notch if visible
-                else if self.state == .visible {
-                    self.hide()
-                }
+                guard self != nil else { return }
+                NotchContentState.shared.onCancelRequested?()
             }
             return nil // Consume the event
         }
 
-        // Global monitor - catches escape when OTHER apps have focus
+        // Global monitor - catches the cancel shortcut when OTHER apps have focus
         self.globalEscapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
             _ = escapeHandler(event)
         }
-
-        // Local monitor - catches escape when OUR app/notch has focus
-        self.localEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: escapeHandler)
     }
 
     func show(audioLevelPublisher: AnyPublisher<CGFloat, Never>, mode: OverlayMode) {

@@ -79,6 +79,7 @@ struct ContentView: View {
     @State private var promptModeHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.promptModeHotkeyShortcut
     @State private var commandModeHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.commandModeHotkeyShortcut
     @State private var rewriteModeHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.rewriteModeHotkeyShortcut
+    @State private var cancelRecordingHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.cancelRecordingHotkeyShortcut
     @State private var isPromptModeShortcutEnabled: Bool = SettingsStore.shared.promptModeShortcutEnabled
     @State private var isCommandModeShortcutEnabled: Bool = SettingsStore.shared.commandModeShortcutEnabled
     @State private var aiSettingsExpanded: Bool = true
@@ -86,14 +87,17 @@ struct ContentView: View {
     @State private var isRecordingForRewrite: Bool = false // Track if current recording is for rewrite mode
     @State private var isRecordingForCommand: Bool = false // Track if current recording is for command mode
     @State private var promptModeOverrideText: String? // System prompt text to use when in prompt mode
+    @State private var activeDictationShortcutSlot: SettingsStore.DictationShortcutSlot? = nil
     @State private var activeRecordingMode: ActiveRecordingMode = .none
     @State private var isRecordingShortcut = false
     @State private var isRecordingPromptModeShortcut = false
     @State private var isRecordingCommandModeShortcut = false
     @State private var isRecordingRewriteShortcut = false
+    @State private var isRecordingCancelShortcut = false
     @State private var pendingModifierFlags: NSEvent.ModifierFlags = []
     @State private var pendingModifierKeyCode: UInt16?
     @State private var pendingModifierOnly = false
+    @State private var shortcutRecordingMessage: String? = nil
     @FocusState private var isTranscriptionFocused: Bool
 
     @State private var selectedSidebarItem: SidebarItem?
@@ -108,7 +112,7 @@ struct ContentView: View {
     @State private var visualizerNoiseThreshold: Double = SettingsStore.shared.visualizerNoiseThreshold
     @State private var inputDevices: [AudioDevice.Device] = []
     @State private var outputDevices: [AudioDevice.Device] = []
-    @State private var selectedInputUID: String = SettingsStore.shared.preferredInputDeviceUID ?? ""
+    @State private var selectedInputUID: String = AudioDevice.getDefaultInputDevice()?.uid ?? ""
     @State private var selectedOutputUID: String = SettingsStore.shared.preferredOutputDeviceUID ?? ""
 
     // AI Prompts Tab State
@@ -239,13 +243,11 @@ struct ContentView: View {
                 if self.selectedInputUID.isEmpty, let defIn = AudioDevice.getDefaultInputDevice()?.uid { self.selectedInputUID = defIn }
                 if self.selectedOutputUID.isEmpty, let defOut = AudioDevice.getDefaultOutputDevice()?.uid { self.selectedOutputUID = defOut }
 
-                // Load saved preferences for UI display (but don't force system defaults)
-                // FluidVoice should NOT control system-wide audio routing
-                if let prefIn = SettingsStore.shared.preferredInputDeviceUID,
-                   prefIn.isEmpty == false,
-                   inputDevices.first(where: { $0.uid == prefIn }) != nil
+                // Input device UI should mirror the current macOS default device.
+                if let systemInputUID = AudioDevice.getDefaultInputDevice()?.uid,
+                   self.inputDevices.contains(where: { $0.uid == systemInputUID })
                 {
-                    self.selectedInputUID = prefIn
+                    self.selectedInputUID = systemInputUID
                 }
 
                 if let prefOut = SettingsStore.shared.preferredOutputDeviceUID,
@@ -365,62 +367,29 @@ struct ContentView: View {
 
             NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
                 let eventModifiers = event.modifierFlags.intersection([.function, .command, .option, .control, .shift])
-                let shortcutModifiers = self.hotkeyShortcut.modifierFlags.intersection([.function, .command, .option, .control, .shift])
-
-                let isRecordingAnyShortcut = self.isRecordingShortcut || self.isRecordingPromptModeShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut
+                let isRecordingAnyShortcut = self.isRecordingShortcut ||
+                    self.isRecordingPromptModeShortcut ||
+                    self.isRecordingCommandModeShortcut ||
+                    self.isRecordingRewriteShortcut ||
+                    self.isRecordingCancelShortcut
+                let recordingTarget = self.currentShortcutRecordingTarget()
 
                 if event.type == .keyDown {
-                    if event.keyCode == self.hotkeyShortcut.keyCode && eventModifiers == shortcutModifiers {
-                        DebugLogger.shared.debug("NSEvent monitor: Global hotkey matched on keyDown, passing event through (GlobalHotkeyManager handles)", source: "ContentView")
-                        return event
-                    }
-
                     guard isRecordingAnyShortcut else {
-                        if event.keyCode == 53 {
-                            // Escape pressed - handle cancellation
-                            var handled = false
-
-                            // Close expanded command notch if visible (highest priority)
-                            if NotchOverlayManager.shared.isCommandOutputExpanded {
-                                DebugLogger.shared
-                                    .debug(
-                                        "NSEvent monitor: Escape pressed, closing expanded command notch",
-                                        source: "ContentView"
-                                    )
-                                NotchOverlayManager.shared.hideExpandedCommandOutput()
-                                handled = true
-                            }
-
-                            if self.asr.isRunning {
-                                DebugLogger.shared.debug("NSEvent monitor: Escape pressed, cancelling ASR recording", source: "ContentView")
-                                Task { await self.asr.stopWithoutTranscription() }
-                                handled = true
-                            }
-
-                            // Close mode views if active
-                            if self.selectedSidebarItem == .commandMode || self.selectedSidebarItem == .rewriteMode {
-                                DebugLogger.shared.debug("NSEvent monitor: Escape pressed, closing mode view", source: "ContentView")
-                                let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
-                                self.selectedSidebarItem = isOnboarded ? .preferences : .welcome
-                                handled = true
-                            }
-
-                            if handled {
-                                return nil // Suppress beep
-                            }
+                        if self.cancelRecordingHotkeyShortcut.matches(keyCode: event.keyCode, modifiers: eventModifiers),
+                           self.handleCancelShortcut()
+                        {
+                            return nil
                         }
+                        self.shortcutRecordingMessage = nil
                         self.resetPendingShortcutState()
                         return event
                     }
 
                     let keyCode = event.keyCode
-                    if keyCode == 53 {
+                    if keyCode == 53 && !self.isRecordingCancelShortcut {
                         DebugLogger.shared.debug("NSEvent monitor: Escape pressed, cancelling shortcut recording", source: "ContentView")
-                        self.isRecordingShortcut = false
-                        self.isRecordingPromptModeShortcut = false
-                        self.isRecordingCommandModeShortcut = false
-                        self.isRecordingRewriteShortcut = false
-                        self.resetPendingShortcutState()
+                        self.clearShortcutRecordingMode()
                         return nil
                     }
 
@@ -428,40 +397,25 @@ struct ContentView: View {
                     let newShortcut = HotkeyShortcut(keyCode: keyCode, modifierFlags: combinedModifiers)
                     DebugLogger.shared.debug("NSEvent monitor: Recording new shortcut: \(newShortcut.displayString)", source: "ContentView")
 
-                    if self.isRecordingRewriteShortcut {
-                        self.rewriteModeHotkeyShortcut = newShortcut
-                        SettingsStore.shared.rewriteModeHotkeyShortcut = newShortcut
-                        self.hotkeyManager?.updateRewriteModeShortcut(newShortcut)
-                        self.isRecordingRewriteShortcut = false
-                    } else if self.isRecordingPromptModeShortcut {
-                        self.promptModeHotkeyShortcut = newShortcut
-                        SettingsStore.shared.promptModeHotkeyShortcut = newShortcut
-                        self.hotkeyManager?.updatePromptModeShortcut(newShortcut)
-                        self.isRecordingPromptModeShortcut = false
-                    } else if self.isRecordingCommandModeShortcut {
-                        self.commandModeHotkeyShortcut = newShortcut
-                        SettingsStore.shared.commandModeHotkeyShortcut = newShortcut
-                        self.hotkeyManager?.updateCommandModeShortcut(newShortcut)
-                        self.isRecordingCommandModeShortcut = false
-                    } else {
-                        self.hotkeyShortcut = newShortcut
-                        SettingsStore.shared.hotkeyShortcut = newShortcut
-                        self.hotkeyManager?.updateShortcut(newShortcut)
-                        self.isRecordingShortcut = false
+                    if let recordingTarget,
+                       let conflictMessage = self.shortcutConflictMessage(for: newShortcut, target: recordingTarget)
+                    {
+                        self.shortcutRecordingMessage = conflictMessage
+                        self.resetPendingShortcutState()
+                        DebugLogger.shared.debug("NSEvent monitor: Shortcut conflict while recording: \(conflictMessage)", source: "ContentView")
+                        return nil
+                    }
+
+                    self.shortcutRecordingMessage = nil
+                    if let recordingTarget {
+                        self.assignRecordedShortcut(newShortcut, to: recordingTarget)
                     }
                     self.resetPendingShortcutState()
                     DebugLogger.shared.debug("NSEvent monitor: Finished recording shortcut", source: "ContentView")
                     return nil
                 } else if event.type == .flagsChanged {
-                    if self.hotkeyShortcut.modifierFlags.isEmpty {
-                        let isModifierKeyPressed = eventModifiers.isEmpty == false
-                        if event.keyCode == self.hotkeyShortcut.keyCode && isModifierKeyPressed {
-                            DebugLogger.shared.debug("NSEvent monitor: Global hotkey matched on flagsChanged, passing event through (GlobalHotkeyManager handles)", source: "ContentView")
-                            return event
-                        }
-                    }
-
                     guard isRecordingAnyShortcut else {
+                        self.shortcutRecordingMessage = nil
                         self.resetPendingShortcutState()
                         return event
                     }
@@ -471,26 +425,18 @@ struct ContentView: View {
                             let newShortcut = HotkeyShortcut(keyCode: modifierKeyCode, modifierFlags: [])
                             DebugLogger.shared.debug("NSEvent monitor: Recording modifier-only shortcut: \(newShortcut.displayString)", source: "ContentView")
 
-                            if self.isRecordingRewriteShortcut {
-                                self.rewriteModeHotkeyShortcut = newShortcut
-                                SettingsStore.shared.rewriteModeHotkeyShortcut = newShortcut
-                                self.hotkeyManager?.updateRewriteModeShortcut(newShortcut)
-                                self.isRecordingRewriteShortcut = false
-                            } else if self.isRecordingPromptModeShortcut {
-                                self.promptModeHotkeyShortcut = newShortcut
-                                SettingsStore.shared.promptModeHotkeyShortcut = newShortcut
-                                self.hotkeyManager?.updatePromptModeShortcut(newShortcut)
-                                self.isRecordingPromptModeShortcut = false
-                            } else if self.isRecordingCommandModeShortcut {
-                                self.commandModeHotkeyShortcut = newShortcut
-                                SettingsStore.shared.commandModeHotkeyShortcut = newShortcut
-                                self.hotkeyManager?.updateCommandModeShortcut(newShortcut)
-                                self.isRecordingCommandModeShortcut = false
-                            } else {
-                                self.hotkeyShortcut = newShortcut
-                                SettingsStore.shared.hotkeyShortcut = newShortcut
-                                self.hotkeyManager?.updateShortcut(newShortcut)
-                                self.isRecordingShortcut = false
+                            if let recordingTarget,
+                               let conflictMessage = self.shortcutConflictMessage(for: newShortcut, target: recordingTarget)
+                            {
+                                self.shortcutRecordingMessage = conflictMessage
+                                self.resetPendingShortcutState()
+                                DebugLogger.shared.debug("NSEvent monitor: Modifier shortcut conflict while recording: \(conflictMessage)", source: "ContentView")
+                                return nil
+                            }
+
+                            self.shortcutRecordingMessage = nil
+                            if let recordingTarget {
+                                self.assignRecordedShortcut(newShortcut, to: recordingTarget)
                             }
                             self.resetPendingShortcutState()
                             DebugLogger.shared.debug("NSEvent monitor: Finished recording modifier shortcut", source: "ContentView")
@@ -598,6 +544,9 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openCustomDictionaryFromVoiceEngine)) { _ in
             self.selectedSidebarItem = .customDictionary
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .settingsBackupDidRestore)) { _ in
+            self.reloadSettingsStateAfterBackupRestore()
         }
         .toolbar {
             if !self.settings.shouldShowOnboarding {
@@ -792,6 +741,80 @@ struct ContentView: View {
         self.pendingModifierFlags = []
         self.pendingModifierKeyCode = nil
         self.pendingModifierOnly = false
+    }
+
+    private enum ShortcutRecordingTarget {
+        case primaryDictation
+        case secondaryDictation
+        case command
+        case edit
+        case cancel
+    }
+
+    private func currentShortcutRecordingTarget() -> ShortcutRecordingTarget? {
+        if self.isRecordingShortcut { return .primaryDictation }
+        if self.isRecordingPromptModeShortcut { return .secondaryDictation }
+        if self.isRecordingCommandModeShortcut { return .command }
+        if self.isRecordingRewriteShortcut { return .edit }
+        if self.isRecordingCancelShortcut { return .cancel }
+        return nil
+    }
+
+    private func shortcutConflictMessage(for shortcut: HotkeyShortcut, target: ShortcutRecordingTarget) -> String? {
+        let configuredShortcuts: [(ShortcutRecordingTarget, String, HotkeyShortcut)] = [
+            (.primaryDictation, "Primary Dictation Shortcut", self.hotkeyShortcut),
+            (.secondaryDictation, "Secondary Dictation Shortcut", self.promptModeHotkeyShortcut),
+            (.command, "Command Mode", self.commandModeHotkeyShortcut),
+            (.edit, "Edit Mode", self.rewriteModeHotkeyShortcut),
+            (.cancel, "Cancel Recording", self.cancelRecordingHotkeyShortcut),
+        ]
+
+        for (otherTarget, title, configuredShortcut) in configuredShortcuts where otherTarget != target {
+            if configuredShortcut == shortcut {
+                return "Duplicate with \(title)"
+            }
+        }
+
+        return nil
+    }
+
+    private func assignRecordedShortcut(_ shortcut: HotkeyShortcut, to target: ShortcutRecordingTarget) {
+        switch target {
+        case .primaryDictation:
+            self.hotkeyShortcut = shortcut
+            SettingsStore.shared.hotkeyShortcut = shortcut
+            self.hotkeyManager?.updateShortcut(shortcut)
+            self.isRecordingShortcut = false
+        case .secondaryDictation:
+            self.promptModeHotkeyShortcut = shortcut
+            SettingsStore.shared.promptModeHotkeyShortcut = shortcut
+            self.hotkeyManager?.updatePromptModeShortcut(shortcut)
+            self.isRecordingPromptModeShortcut = false
+        case .command:
+            self.commandModeHotkeyShortcut = shortcut
+            SettingsStore.shared.commandModeHotkeyShortcut = shortcut
+            self.hotkeyManager?.updateCommandModeShortcut(shortcut)
+            self.isRecordingCommandModeShortcut = false
+        case .edit:
+            self.rewriteModeHotkeyShortcut = shortcut
+            SettingsStore.shared.rewriteModeHotkeyShortcut = shortcut
+            self.hotkeyManager?.updateRewriteModeShortcut(shortcut)
+            self.isRecordingRewriteShortcut = false
+        case .cancel:
+            self.cancelRecordingHotkeyShortcut = shortcut
+            SettingsStore.shared.cancelRecordingHotkeyShortcut = shortcut
+            self.isRecordingCancelShortcut = false
+        }
+    }
+
+    private func clearShortcutRecordingMode() {
+        self.isRecordingShortcut = false
+        self.isRecordingPromptModeShortcut = false
+        self.isRecordingCommandModeShortcut = false
+        self.isRecordingRewriteShortcut = false
+        self.isRecordingCancelShortcut = false
+        self.shortcutRecordingMessage = nil
+        self.resetPendingShortcutState()
     }
 
     private func openIssueReportingPage() {
@@ -1135,6 +1158,7 @@ struct ContentView: View {
             accessibilityEnabled: self.$accessibilityEnabled,
             hotkeyShortcut: self.$hotkeyShortcut,
             isRecordingShortcut: self.$isRecordingShortcut,
+            shortcutRecordingMessage: self.$shortcutRecordingMessage,
             promptModeShortcut: self.$promptModeHotkeyShortcut,
             isRecordingPromptModeShortcut: self.$isRecordingPromptModeShortcut,
             promptModeShortcutEnabled: self.$isPromptModeShortcutEnabled,
@@ -1142,6 +1166,8 @@ struct ContentView: View {
             isRecordingCommandModeShortcut: self.$isRecordingCommandModeShortcut,
             rewriteShortcut: self.$rewriteModeHotkeyShortcut,
             isRecordingRewriteShortcut: self.$isRecordingRewriteShortcut,
+            cancelRecordingShortcut: self.$cancelRecordingHotkeyShortcut,
+            isRecordingCancelShortcut: self.$isRecordingCancelShortcut,
             commandModeShortcutEnabled: self.$isCommandModeShortcutEnabled,
             rewriteShortcutEnabled: self.$isRewriteModeShortcutEnabled,
             hotkeyManagerInitialized: self.$hotkeyManagerInitialized,
@@ -1407,64 +1433,15 @@ struct ContentView: View {
      }
      */
 
-    /// Build a general system prompt with voice editing commands support
-    private func buildSystemPrompt(appInfo: (name: String, bundleId: String, windowTitle: String)) -> String {
-        return SettingsStore.shared.effectiveSystemPrompt(
-            for: .dictate,
-            appBundleID: appInfo.bundleId
-        )
-    }
-
-    private var shouldTracePromptProcessing: Bool {
-        self.forcePromptTraceToConsole ||
-            UserDefaults.standard.bool(forKey: "EnableDebugLogs")
-    }
-
-    private var forcePromptTraceToConsole: Bool {
-        ProcessInfo.processInfo.environment["FLUID_PROMPT_TRACE"] == "1"
-    }
-
-    private func logDictationPromptTrace(_ title: String, value: String) {
-        let line = "[PromptTrace][Dictate] \(title):\n\(value)"
-        if self.forcePromptTraceToConsole {
-            print(line)
-        }
-        DebugLogger.shared.debug(line, source: "ContentView")
-    }
-
-    private func customPromptAnalyticsProperties(promptSource: String, overrideEmpty: Bool?) -> [String: Any] {
-        let providerID = SettingsStore.shared.selectedProviderID
-        let providerKey = self.providerKey(for: providerID)
-        let selectedModel = SettingsStore.shared.selectedModelByProvider[providerKey] ?? SettingsStore.shared.selectedModel ?? ""
-        let isCustomProvider = !ModelRepository.shared.isBuiltIn(providerID)
-        let providerName = isCustomProvider ? "Custom Provider" : ModelRepository.shared.displayName(for: providerID)
-
-        var properties: [String: Any] = [
-            "prompt_source": promptSource,
-            "provider_id": isCustomProvider ? "custom" : providerID,
-            "provider_name": providerName,
-            "provider_type": isCustomProvider ? "custom" : "built_in",
-        ]
-        if !selectedModel.isEmpty {
-            properties["model"] = isCustomProvider ? "custom" : selectedModel
-        }
-        if let overrideEmpty {
-            properties["override_empty"] = overrideEmpty
-        }
-        return properties
-    }
-
-    // MARK: - Local Endpoint Detection
-
-    private func isLocalEndpoint(_ urlString: String) -> Bool {
-        return ModelRepository.shared.isLocalEndpoint(urlString)
-    }
-
     // NOTE: Thinking token filtering is now handled by LLMClient.stripThinkingTags()
 
     // MARK: - Modular AI Processing
 
-    private func processTextWithAI(_ inputText: String, overrideSystemPrompt: String? = nil) async -> String {
+    private func processTextWithAI(
+        _ inputText: String,
+        overrideSystemPrompt: String? = nil,
+        dictationSlot: SettingsStore.DictationShortcutSlot? = nil
+    ) async -> String {
         // CRITICAL FIX: Read current settings from SettingsStore, not stale @State copies
         // This ensures AI provider/model changes in AISettingsView take effect immediately
         let currentSelectedProviderID = SettingsStore.shared.selectedProviderID
@@ -1503,7 +1480,7 @@ struct ContentView: View {
         let systemPrompt: String = {
             let override = overrideSystemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !override.isEmpty { return override }
-            return self.buildSystemPrompt(appInfo: appInfo)
+            return self.buildSystemPrompt(appInfo: appInfo, dictationSlot: dictationSlot)
         }()
 
         // Route to Apple Intelligence if selected
@@ -1512,20 +1489,24 @@ struct ContentView: View {
             if #available(macOS 26.0, *) {
                 let provider = AppleIntelligenceProvider()
                 if self.shouldTracePromptProcessing {
-                    let selectedProfile = SettingsStore.shared.resolvedPromptProfile(
-                        for: .dictate,
+                    let activeSlot = dictationSlot ?? self.currentDictationShortcutSlot(for: self.activeRecordingMode) ?? .primary
+                    let selectedProfile = SettingsStore.shared.resolvedDictationPromptProfile(
+                        for: activeSlot,
                         appBundleID: appInfo.bundleId
                     )
                     let selectedPromptName: String = {
+                        if SettingsStore.shared.dictationPromptSelection(for: activeSlot) == .off {
+                            return "Off"
+                        }
                         if let profile = selectedProfile {
                             return profile.name.isEmpty ? "Untitled Prompt" : profile.name
                         }
-                        return "Default Dictate"
+                        return "Default"
                     }()
                     self.logDictationPromptTrace("Selected prompt profile", value: selectedPromptName)
                     self.logDictationPromptTrace(
                         "Prompt body (custom/default body)",
-                        value: SettingsStore.shared.effectivePromptBody(for: .dictate, appBundleID: appInfo.bundleId)
+                        value: SettingsStore.shared.effectiveDictationPromptBody(for: activeSlot, appBundleID: appInfo.bundleId)
                     )
                     self.logDictationPromptTrace("Built-in default system prompt (baseline)", value: SettingsStore.defaultSystemPromptText(for: .dictate))
                     self.logDictationPromptTrace("Final system prompt sent to model", value: systemPrompt)
@@ -1555,20 +1536,24 @@ struct ContentView: View {
 
         DebugLogger.shared.debug("Using app context for AI: app=\(appInfo.name), bundleId=\(appInfo.bundleId), title=\(appInfo.windowTitle)", source: "ContentView")
         if self.shouldTracePromptProcessing {
-            let selectedProfile = SettingsStore.shared.resolvedPromptProfile(
-                for: .dictate,
+            let activeSlot = dictationSlot ?? self.currentDictationShortcutSlot(for: self.activeRecordingMode) ?? .primary
+            let selectedProfile = SettingsStore.shared.resolvedDictationPromptProfile(
+                for: activeSlot,
                 appBundleID: appInfo.bundleId
             )
             let selectedPromptName: String = {
+                if SettingsStore.shared.dictationPromptSelection(for: activeSlot) == .off {
+                    return "Off"
+                }
                 if let profile = selectedProfile {
                     return profile.name.isEmpty ? "Untitled Prompt" : profile.name
                 }
-                return "Default Dictate"
+                return "Default"
             }()
             self.logDictationPromptTrace("Selected prompt profile", value: selectedPromptName)
             self.logDictationPromptTrace(
                 "Prompt body (custom/default body)",
-                value: SettingsStore.shared.effectivePromptBody(for: .dictate, appBundleID: appInfo.bundleId)
+                value: SettingsStore.shared.effectiveDictationPromptBody(for: activeSlot, appBundleID: appInfo.bundleId)
             )
             self.logDictationPromptTrace("Built-in default system prompt (baseline)", value: SettingsStore.defaultSystemPromptText(for: .dictate))
             self.logDictationPromptTrace("Prompt override in use", value: (overrideSystemPrompt?.isEmpty == false) ? "yes" : "no")
@@ -1668,6 +1653,7 @@ struct ContentView: View {
         let modeAtStop = self.activeRecordingMode
         let wasRewriteMode = modeAtStop == .edit || self.isRecordingForRewrite
         let wasCommandMode = modeAtStop == .command || self.isRecordingForCommand
+        let activeDictationSlot = self.currentDictationShortcutSlot(for: modeAtStop)
         let promptOverride = self.promptModeOverrideText
         DebugLogger.shared.info(
             "Routing decision snapshot | activeMode=\(modeAtStop.rawValue) | rewrite=\(wasRewriteMode) | command=\(wasCommandMode) | overlay=\(NotchContentState.shared.mode.rawValue)",
@@ -1760,10 +1746,8 @@ struct ContentView: View {
 
         var finalText: String
 
-        // Check if we should use AI processing.
-        // Prompt mode can still use AI when a provider is configured even if the global gate is off.
-        let shouldUseAI = DictationAIPostProcessingGate.isConfigured() ||
-            (promptOverride != nil && DictationAIPostProcessingGate.isProviderConfigured())
+        let shouldUseAI = activeDictationSlot.map { DictationAIPostProcessingGate.isConfigured(for: $0) } ??
+            DictationAIPostProcessingGate.isConfigured()
         let transcriptionModelInfo = self.currentTranscriptionModelInfo()
 
         if shouldUseAI {
@@ -1778,7 +1762,11 @@ struct ContentView: View {
             // Ensure the status label becomes visible immediately.
             await Task.yield()
 
-            finalText = await self.processTextWithAI(transcribedText, overrideSystemPrompt: promptOverride)
+            finalText = await self.processTextWithAI(
+                transcribedText,
+                overrideSystemPrompt: promptOverride,
+                dictationSlot: activeDictationSlot
+            )
             let postProcessingLatencyMs = Int((Date().timeIntervalSince(postProcessingStart) * 1000).rounded())
             AnalyticsService.shared.capture(
                 .dictationPostProcessingCompleted,
@@ -2170,11 +2158,8 @@ struct ContentView: View {
     }
 
     private func setActiveRecordingMode(_ mode: ActiveRecordingMode) {
-        if mode != .promptMode {
-            self.promptModeOverrideText = nil
-            NotchContentState.shared.promptModeOverrideProfileName = nil
-            NotchContentState.shared.promptModeOverrideProfileID = nil
-            NotchContentState.shared.isPromptModeActive = false
+        if mode != .dictate, mode != .promptMode {
+            self.clearActiveDictationShortcutState()
         }
         self.activeRecordingMode = mode
         switch mode {
@@ -2415,21 +2400,13 @@ struct ContentView: View {
         NotchContentState.shared.onOpenPreferencesRequested = {
             self.menuBarManager.openPreferencesFromUI()
         }
-        NotchContentState.shared.onPromptModeProfileChangeRequested = { profile in
-            if let p = profile {
-                self.promptModeOverrideText = SettingsStore.combineBasePrompt(
-                    for: .dictate,
-                    with: SettingsStore.stripBasePrompt(for: .dictate, from: p.prompt)
-                )
-                NotchContentState.shared.promptModeOverrideProfileName = p.name
-                NotchContentState.shared.promptModeOverrideProfileID = p.id
-                SettingsStore.shared.promptModeSelectedPromptID = p.id
-            } else {
-                self.promptModeOverrideText = nil
-                NotchContentState.shared.promptModeOverrideProfileName = nil
-                NotchContentState.shared.promptModeOverrideProfileID = nil
-                SettingsStore.shared.promptModeSelectedPromptID = nil
-            }
+        NotchContentState.shared.onCancelRequested = {
+            _ = self.handleCancelShortcut()
+        }
+        NotchContentState.shared.onDictationPromptSelectionRequested = { selection in
+            let slot = self.activeDictationShortcutSlot ?? .primary
+            SettingsStore.shared.setDictationPromptSelection(selection, for: slot)
+            self.applyDictationShortcutSelectionContext(for: slot)
         }
 
         guard self.hotkeyManager == nil else { return }
@@ -2453,18 +2430,7 @@ struct ContentView: View {
                     "ContentView: selected model for dictate hotkey=\(SettingsStore.shared.selectedSpeechModel.displayName)",
                     source: "ContentView"
                 )
-                self.captureRecordingContext()
-                self.setActiveRecordingMode(.dictate)
-                self.rewriteModeService.clearState()
-                self.menuBarManager.setOverlayMode(.dictation)
-
-                guard !self.asr.isRunning else { return }
-                if SettingsStore.shared.enableTranscriptionSounds {
-                    TranscriptionSoundPlayer.shared.playStartSound()
-                }
-                Task {
-                    await self.asr.start()
-                }
+                self.beginDictationRecording(for: .primary, mode: .dictate)
             },
             stopAndProcessCallback: {
                 let route = self.currentDictationOutputRouteForHotkeyStop()
@@ -2473,30 +2439,7 @@ struct ContentView: View {
             },
             promptModeCallback: {
                 DebugLogger.shared.info("Prompt mode triggered", source: "ContentView")
-                self.captureRecordingContext()
-
-                // Resolve the full system prompt for the selected profile
-                let settings = SettingsStore.shared
-                if let promptID = settings.promptModeSelectedPromptID,
-                   let profile = settings.dictationPromptProfiles.first(where: { $0.id == promptID })
-                {
-                    self.promptModeOverrideText = SettingsStore.combineBasePrompt(for: .dictate, with: SettingsStore.stripBasePrompt(for: .dictate, from: profile.prompt))
-                    NotchContentState.shared.promptModeOverrideProfileName = profile.name
-                    NotchContentState.shared.promptModeOverrideProfileID = profile.id
-                }
-
-                NotchContentState.shared.isPromptModeActive = true
-                self.setActiveRecordingMode(.promptMode)
-                self.rewriteModeService.clearState()
-                self.menuBarManager.setOverlayMode(.dictation)
-
-                guard !self.asr.isRunning else { return }
-                if settings.enableTranscriptionSounds {
-                    TranscriptionSoundPlayer.shared.playStartSound()
-                }
-                Task {
-                    await self.asr.start()
-                }
+                self.beginDictationRecording(for: .secondary, mode: .promptMode)
             },
             commandModeCallback: {
                 DebugLogger.shared.info("Command mode triggered", source: "ContentView")
@@ -2566,6 +2509,13 @@ struct ContentView: View {
             },
             isRewriteRecordingProvider: {
                 self.activeRecordingMode == .edit
+            },
+            isShortcutCaptureActiveProvider: {
+                self.isRecordingShortcut ||
+                    self.isRecordingPromptModeShortcut ||
+                    self.isRecordingCommandModeShortcut ||
+                    self.isRecordingRewriteShortcut ||
+                    self.isRecordingCancelShortcut
             }
         )
 
@@ -2625,6 +2575,39 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    @discardableResult
+    private func handleCancelShortcut() -> Bool {
+        var handled = false
+
+        if NotchOverlayManager.shared.isCommandOutputExpanded {
+            DebugLogger.shared.debug("Cancel shortcut: closing expanded command notch", source: "ContentView")
+            NotchOverlayManager.shared.hideExpandedCommandOutput()
+            NotchOverlayManager.shared.onCommandOutputDismiss?()
+            handled = true
+        }
+
+        if self.asr.isRunning {
+            DebugLogger.shared.debug("Cancel shortcut: cancelling ASR recording", source: "ContentView")
+            Task { await self.asr.stopWithoutTranscription() }
+            handled = true
+        }
+
+        if NotchOverlayManager.shared.isBottomOverlayVisible || NotchOverlayManager.shared.isOverlayVisible {
+            DebugLogger.shared.debug("Cancel shortcut: hiding recording overlay", source: "ContentView")
+            NotchOverlayManager.shared.hide()
+            handled = true
+        }
+
+        if self.selectedSidebarItem == .commandMode || self.selectedSidebarItem == .rewriteMode {
+            DebugLogger.shared.debug("Cancel shortcut: closing mode view", source: "ContentView")
+            let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
+            self.selectedSidebarItem = isOnboarded ? .preferences : .welcome
+            handled = true
+        }
+
+        return handled
     }
 
     // MARK: - Model Management Helpers
@@ -2697,6 +2680,127 @@ struct ContentView: View {
 // MARK: - ContentView Playground & Onboarding Helpers
 
 extension ContentView {
+    private func buildSystemPrompt(
+        appInfo: (name: String, bundleId: String, windowTitle: String),
+        dictationSlot: SettingsStore.DictationShortcutSlot? = nil
+    ) -> String {
+        if let slot = dictationSlot ?? self.currentDictationShortcutSlot(for: self.activeRecordingMode) {
+            return SettingsStore.shared.effectiveDictationSystemPrompt(for: slot, appBundleID: appInfo.bundleId)
+        }
+        return SettingsStore.shared.effectiveSystemPrompt(for: .dictate, appBundleID: appInfo.bundleId)
+    }
+
+    private var shouldTracePromptProcessing: Bool {
+        self.forcePromptTraceToConsole ||
+            UserDefaults.standard.bool(forKey: "EnableDebugLogs")
+    }
+
+    private var forcePromptTraceToConsole: Bool {
+        ProcessInfo.processInfo.environment["FLUID_PROMPT_TRACE"] == "1"
+    }
+
+    private func logDictationPromptTrace(_ title: String, value: String) {
+        let line = "[PromptTrace][Dictate] \(title):\n\(value)"
+        if self.forcePromptTraceToConsole {
+            print(line)
+        }
+        DebugLogger.shared.debug(line, source: "ContentView")
+    }
+
+    private func customPromptAnalyticsProperties(promptSource: String, overrideEmpty: Bool?) -> [String: Any] {
+        let providerID = SettingsStore.shared.selectedProviderID
+        let providerKey = self.providerKey(for: providerID)
+        let selectedModel = SettingsStore.shared.selectedModelByProvider[providerKey] ?? SettingsStore.shared.selectedModel ?? ""
+        let isCustomProvider = !ModelRepository.shared.isBuiltIn(providerID)
+        let providerName = isCustomProvider ? "Custom Provider" : ModelRepository.shared.displayName(for: providerID)
+
+        var properties: [String: Any] = [
+            "prompt_source": promptSource,
+            "provider_id": isCustomProvider ? "custom" : providerID,
+            "provider_name": providerName,
+            "provider_type": isCustomProvider ? "custom" : "built_in",
+        ]
+        if !selectedModel.isEmpty {
+            properties["model"] = isCustomProvider ? "custom" : selectedModel
+        }
+        if let overrideEmpty {
+            properties["override_empty"] = overrideEmpty
+        }
+        return properties
+    }
+
+    private func isLocalEndpoint(_ urlString: String) -> Bool {
+        ModelRepository.shared.isLocalEndpoint(urlString)
+    }
+
+    private func currentDictationShortcutSlot(for mode: ActiveRecordingMode) -> SettingsStore.DictationShortcutSlot? {
+        switch mode {
+        case .dictate:
+            return self.activeDictationShortcutSlot ?? .primary
+        case .promptMode:
+            return self.activeDictationShortcutSlot ?? .secondary
+        case .none, .edit, .command:
+            return nil
+        }
+    }
+
+    private func clearActiveDictationShortcutState() {
+        self.activeDictationShortcutSlot = nil
+        self.promptModeOverrideText = nil
+        NotchContentState.shared.activeDictationShortcutSlot = nil
+        NotchContentState.shared.promptModeOverrideProfileName = nil
+        NotchContentState.shared.promptModeOverrideProfileID = nil
+        NotchContentState.shared.isPromptModeActive = false
+    }
+
+    private func applyDictationShortcutSelectionContext(for slot: SettingsStore.DictationShortcutSlot) {
+        let settings = SettingsStore.shared
+        self.activeDictationShortcutSlot = slot
+        NotchContentState.shared.activeDictationShortcutSlot = slot
+        NotchContentState.shared.isPromptModeActive = (slot == .secondary)
+
+        switch settings.dictationPromptSelection(for: slot) {
+        case .off, .default:
+            self.promptModeOverrideText = nil
+            NotchContentState.shared.promptModeOverrideProfileName = nil
+            NotchContentState.shared.promptModeOverrideProfileID = nil
+        case let .profile(profileID):
+            guard let profile = settings.selectedDictationPromptProfile(for: slot) ?? settings.dictationPromptProfiles.first(where: {
+                $0.id == profileID && $0.mode.normalized == .dictate
+            }) else {
+                settings.setDictationPromptSelection(.default, for: slot)
+                self.promptModeOverrideText = nil
+                NotchContentState.shared.promptModeOverrideProfileName = nil
+                NotchContentState.shared.promptModeOverrideProfileID = nil
+                return
+            }
+
+            self.promptModeOverrideText = SettingsStore.combineBasePrompt(
+                for: .dictate,
+                with: SettingsStore.stripBasePrompt(for: .dictate, from: profile.prompt)
+            )
+            NotchContentState.shared.promptModeOverrideProfileName = profile.name
+            NotchContentState.shared.promptModeOverrideProfileID = profile.id
+        }
+    }
+
+    private func beginDictationRecording(for slot: SettingsStore.DictationShortcutSlot, mode: ActiveRecordingMode) {
+        DebugLogger.shared.debug("Begin dictation recording for slot \(slot.rawValue)", source: "ContentView")
+        self.captureRecordingContext()
+        self.applyDictationShortcutSelectionContext(for: slot)
+        self.setActiveRecordingMode(mode)
+        self.rewriteModeService.clearState()
+        self.menuBarManager.setOverlayMode(.dictation)
+
+        guard !self.asr.isRunning else { return }
+        if SettingsStore.shared.enableTranscriptionSounds {
+            TranscriptionSoundPlayer.shared.playStartSound()
+        }
+        Task {
+            await self.asr.start()
+        }
+    }
+
     private func callOpenAIChat() async {
         guard !self.isCallingAI else { return }
         await MainActor.run { self.isCallingAI = true }
@@ -2837,6 +2941,63 @@ extension ContentView {
                 }
             }
         }
+    }
+}
+
+private extension ContentView {
+    func reloadSettingsStateAfterBackupRestore() {
+        self.hotkeyShortcut = SettingsStore.shared.hotkeyShortcut
+        self.promptModeHotkeyShortcut = SettingsStore.shared.promptModeHotkeyShortcut
+        self.commandModeHotkeyShortcut = SettingsStore.shared.commandModeHotkeyShortcut
+        self.rewriteModeHotkeyShortcut = SettingsStore.shared.rewriteModeHotkeyShortcut
+        self.cancelRecordingHotkeyShortcut = SettingsStore.shared.cancelRecordingHotkeyShortcut
+        self.isPromptModeShortcutEnabled = SettingsStore.shared.promptModeShortcutEnabled
+        self.isCommandModeShortcutEnabled = SettingsStore.shared.commandModeShortcutEnabled
+        self.isRewriteModeShortcutEnabled = SettingsStore.shared.rewriteModeShortcutEnabled
+        self.playgroundUsed = SettingsStore.shared.playgroundUsed
+        self.visualizerNoiseThreshold = SettingsStore.shared.visualizerNoiseThreshold
+        self.selectedInputUID = AudioDevice.getDefaultInputDevice()?.uid ?? ""
+        self.selectedOutputUID = SettingsStore.shared.preferredOutputDeviceUID ?? ""
+        self.enableDebugLogs = SettingsStore.shared.enableDebugLogs
+        self.pressAndHoldModeEnabled = SettingsStore.shared.pressAndHoldMode
+        self.enableStreamingPreview = SettingsStore.shared.enableStreamingPreview
+        self.copyToClipboard = SettingsStore.shared.copyTranscriptionToClipboard
+        self.launchAtStartup = SettingsStore.shared.launchAtStartup
+        self.showInDock = SettingsStore.shared.showInDock
+        self.availableModelsByProvider = SettingsStore.shared.availableModelsByProvider
+        self.selectedModelByProvider = SettingsStore.shared.selectedModelByProvider
+        self.savedProviders = SettingsStore.shared.savedProviders
+        self.selectedProviderID = SettingsStore.shared.selectedProviderID
+
+        self.hotkeyManager?.updateShortcut(self.hotkeyShortcut)
+        self.hotkeyManager?.updatePromptModeShortcut(self.promptModeHotkeyShortcut)
+        self.hotkeyManager?.updatePromptModeShortcutEnabled(self.isPromptModeShortcutEnabled)
+        self.hotkeyManager?.updateCommandModeShortcut(self.commandModeHotkeyShortcut)
+        self.hotkeyManager?.updateCommandModeShortcutEnabled(self.isCommandModeShortcutEnabled)
+        self.hotkeyManager?.updateRewriteModeShortcut(self.rewriteModeHotkeyShortcut)
+        self.hotkeyManager?.updateRewriteModeShortcutEnabled(self.isRewriteModeShortcutEnabled)
+
+        self.currentProvider = self.providerKey(for: self.selectedProviderID)
+        if let saved = self.savedProviders.first(where: { $0.id == self.selectedProviderID }) {
+            self.availableModels = saved.models
+            self.openAIBaseURL = saved.baseURL
+        } else if let stored = self.availableModelsByProvider[self.currentProvider], !stored.isEmpty {
+            self.availableModels = stored
+            self.openAIBaseURL = ModelRepository.shared.defaultBaseURL(for: self.selectedProviderID)
+        } else {
+            self.availableModels = ModelRepository.shared.defaultModels(for: self.currentProvider)
+            self.openAIBaseURL = ModelRepository.shared.defaultBaseURL(for: self.selectedProviderID)
+        }
+
+        if let restoredSelectedModel = self.selectedModelByProvider[self.currentProvider],
+           self.availableModels.contains(restoredSelectedModel)
+        {
+            self.selectedModel = restoredSelectedModel
+        } else if let firstModel = self.availableModels.first {
+            self.selectedModel = firstModel
+        }
+
+        self.refreshDevices()
     }
 }
 
