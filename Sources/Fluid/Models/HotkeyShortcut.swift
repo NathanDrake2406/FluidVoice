@@ -43,9 +43,19 @@ struct HotkeyShortcut: Codable, Equatable {
         case 124: return "Right"
         case 125: return "Down"
         case 126: return "Up"
-        default: return characterForKeyCode(keyCode)
+        default: return characterForKeyCode(keyCode) ?? qwertyFallback[keyCode]
         }
     }
+
+    // US QWERTY names used when TIS layout data is unavailable (e.g. emoji/CJK input sources).
+    private static let qwertyFallback: [UInt16: String] = [
+        0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X",
+        8: "C", 9: "V", 10: "§", 11: "B", 12: "Q", 13: "W", 14: "E", 15: "R",
+        16: "Y", 17: "T", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5",
+        24: "=", 25: "9", 26: "7", 27: "-", 28: "8", 29: "0", 30: "]", 31: "O",
+        32: "U", 33: "[", 34: "I", 35: "P", 37: "L", 38: "J", 39: "'", 40: "K",
+        41: ";", 42: "\\", 43: ",", 44: "/", 45: "N", 46: "M", 47: ".", 50: "`",
+    ]
 
     /// Uses the current keyboard layout to resolve a key code to its displayed character.
     static func characterForKeyCode(_ keyCode: UInt16) -> String? {
@@ -74,11 +84,12 @@ struct HotkeyShortcut: Codable, Equatable {
                 &chars
             )
             guard status == noErr, length > 0 else { return nil }
-            let result = String(utf16CodeUnits: chars, count: length).uppercased()
-            guard !result.isEmpty, !result.unicodeScalars.contains(where: { $0.value < 0x20 }) else {
+            let raw = String(utf16CodeUnits: chars, count: length)
+            guard !raw.isEmpty, !raw.unicodeScalars.contains(where: { $0.value < 0x20 }) else {
                 return nil
             }
-            return result
+            let upper = raw.uppercased()
+            return upper.count == raw.count ? upper : raw
         }
     }
 }
