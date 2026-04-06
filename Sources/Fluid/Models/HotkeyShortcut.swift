@@ -56,6 +56,7 @@ struct HotkeyShortcut: Codable, Equatable {
         case 7: return "X"
         case 8: return "C"
         case 9: return "V"
+        case 10: return "§"
         case 11: return "B"
         case 12: return "Q"
         case 13: return "W"
