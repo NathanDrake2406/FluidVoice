@@ -44,6 +44,7 @@ struct SettingsBackupPayload: Codable, Equatable {
     let pressAndHoldMode: Bool
     let enableStreamingPreview: Bool
     let enableAIStreaming: Bool
+    let parakeetRealtimeTextboxEnabled: Bool?
     let copyTranscriptionToClipboard: Bool
     let textInsertionMode: SettingsStore.TextInsertionMode
     let preferredInputDeviceUID: String?

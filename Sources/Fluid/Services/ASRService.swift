@@ -469,6 +469,7 @@ final class ASRService: ObservableObject {
     private var isProcessingChunk: Bool = false
     private var skipNextChunk: Bool = false
     private var previousFullTranscription: String = ""
+    private var streamingTextHandler: ((String) -> Void)?
     private let transcriptionExecutor = TranscriptionExecutor() // Serializes all CoreML access
 
     /// Tracks whether we paused system media for this recording session.
@@ -2429,6 +2430,7 @@ final class ASRService: ObservableObject {
                 // Smart diff: only show truly new words
                 let updatedText = self.smartDiffUpdate(previous: self.previousFullTranscription, current: newText)
                 self.partialTranscription = updatedText
+                self.streamingTextHandler?(updatedText)
                 self.previousFullTranscription = newText
 
                 DebugLogger.shared.debug("✅ Streaming: '\(updatedText)' (\(String(format: "%.2f", duration))s)", source: "ASRService")
@@ -2497,6 +2499,10 @@ final class ASRService: ObservableObject {
 
     func typeTextToActiveField(_ text: String, preferredTargetPID: pid_t?) {
         self.typingService.typeTextInstantly(text, preferredTargetPID: preferredTargetPID)
+    }
+
+    func setStreamingTextHandler(_ handler: ((String) -> Void)?) {
+        self.streamingTextHandler = handler
     }
 
     /// Removes filler sounds from transcribed text

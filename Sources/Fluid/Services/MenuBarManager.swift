@@ -89,7 +89,9 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
                 guard self != nil else { return }
                 // CRITICAL FIX: Check if streaming preview is enabled before updating notch
                 // The "Show Live Preview" toggle in Preferences should control this behavior
-                if SettingsStore.shared.enableStreamingPreview {
+                if SettingsStore.shared.enableStreamingPreview,
+                   !RealtimeTextboxOutputCoordinator.isEnabledForCurrentSettings()
+                {
                     NotchOverlayManager.shared.updateTranscriptionText(newText)
                 }
             }

@@ -1261,6 +1261,14 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    var parakeetRealtimeTextboxEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.parakeetRealtimeTextboxEnabled) as? Bool ?? false }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.parakeetRealtimeTextboxEnabled)
+        }
+    }
+
     var copyTranscriptionToClipboard: Bool {
         get { self.defaults.bool(forKey: Keys.copyTranscriptionToClipboard) }
         set { self.defaults.set(newValue, forKey: Keys.copyTranscriptionToClipboard) }
@@ -2168,6 +2176,7 @@ final class SettingsStore: ObservableObject {
             pressAndHoldMode: self.pressAndHoldMode,
             enableStreamingPreview: self.enableStreamingPreview,
             enableAIStreaming: self.enableAIStreaming,
+            parakeetRealtimeTextboxEnabled: self.parakeetRealtimeTextboxEnabled,
             copyTranscriptionToClipboard: self.copyTranscriptionToClipboard,
             textInsertionMode: self.textInsertionMode,
             preferredInputDeviceUID: self.preferredInputDeviceUID,
@@ -2237,6 +2246,7 @@ final class SettingsStore: ObservableObject {
         self.pressAndHoldMode = payload.pressAndHoldMode
         self.enableStreamingPreview = payload.enableStreamingPreview
         self.enableAIStreaming = payload.enableAIStreaming
+        self.parakeetRealtimeTextboxEnabled = payload.parakeetRealtimeTextboxEnabled ?? false
         self.copyTranscriptionToClipboard = payload.copyTranscriptionToClipboard
         self.textInsertionMode = payload.textInsertionMode
         self.preferredInputDeviceUID = payload.preferredInputDeviceUID
@@ -3516,6 +3526,7 @@ private extension SettingsStore {
         static let pressAndHoldMode = "PressAndHoldMode"
         static let enableStreamingPreview = "EnableStreamingPreview"
         static let enableAIStreaming = "EnableAIStreaming"
+        static let parakeetRealtimeTextboxEnabled = "ParakeetRealtimeTextboxEnabled"
         static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
         static let textInsertionMode = "TextInsertionMode"
         static let autoUpdateCheckEnabled = "AutoUpdateCheckEnabled"

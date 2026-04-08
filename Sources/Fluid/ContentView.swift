@@ -55,6 +55,7 @@ struct ContentView: View {
     @StateObject private var mouseTracker = MousePositionTracker()
     @StateObject private var commandModeService = CommandModeService()
     @StateObject private var rewriteModeService = RewriteModeService()
+    @StateObject private var realtimeTextboxOutput = RealtimeTextboxOutputCoordinator()
     @EnvironmentObject private var menuBarManager: MenuBarManager
     @ObservedObject private var settings = SettingsStore.shared
 
@@ -1306,6 +1307,47 @@ struct ContentView: View {
         )
     }
 
+    private func shouldUseRealtimeTextboxBeta(route: DictationOutputRoute) -> Bool {
+        guard route == .normal else { return false }
+        let isDictationMode = self.activeRecordingMode == .dictate || self.activeRecordingMode == .promptMode
+        guard isDictationMode else { return false }
+        return RealtimeTextboxOutputCoordinator.isEnabled(settings: self.settings)
+    }
+
+    private func shouldUseRealtimeTextboxBeta(
+        route: DictationOutputRoute,
+        mode: ActiveRecordingMode
+    ) -> Bool {
+        guard route == .normal else { return false }
+        let isDictationMode = mode == .dictate || mode == .promptMode
+        guard isDictationMode else { return false }
+        return RealtimeTextboxOutputCoordinator.isEnabled(settings: self.settings)
+    }
+
+    private func configureRealtimeTextboxStreamingIfNeeded(for route: DictationOutputRoute) {
+        guard self.shouldUseRealtimeTextboxBeta(route: route) else {
+            self.realtimeTextboxOutput.cancelSession()
+            self.asr.setStreamingTextHandler(nil)
+            return
+        }
+
+        guard self.realtimeTextboxOutput.startSessionIfPossible() else {
+            self.asr.setStreamingTextHandler(nil)
+            return
+        }
+
+        self.asr.setStreamingTextHandler { [weak realtimeTextboxOutput = self.realtimeTextboxOutput] text in
+            realtimeTextboxOutput?.consumeStreamingText(text)
+        }
+    }
+
+    private func clearRealtimeTextboxStreaming(cancelSession: Bool) {
+        self.asr.setStreamingTextHandler(nil)
+        if cancelSession {
+            self.realtimeTextboxOutput.cancelSession()
+        }
+    }
+
     private func resolveTypingTargetPID() -> (pid: pid_t?, shouldRestoreOriginalFocus: Bool) {
         let originalPID = NotchContentState.shared.recordingTargetPID
         let currentFocusedPID = TypingService.captureSystemFocusedPID()
@@ -1676,12 +1718,14 @@ struct ContentView: View {
         // Stop the ASR service and wait for transcription to complete
         // The processing indicator will stay visible during this phase
         let transcribedText = await asr.stop()
+        self.clearRealtimeTextboxStreaming(cancelSession: false)
 
         // Reset the transcription text display after transcription completes
         NotchOverlayManager.shared.updateTranscriptionText("")
 
         guard transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             DebugLogger.shared.debug("Transcription returned empty text", source: "ContentView")
+            self.realtimeTextboxOutput.cancelSession()
             // Hide processing state when returning early
             self.menuBarManager.setProcessing(false)
             return
@@ -1705,6 +1749,7 @@ struct ContentView: View {
             defer {
                 self.menuBarManager.setProcessing(false)
                 promptTest.isProcessing = false
+                self.realtimeTextboxOutput.cancelSession()
             }
 
             let result = await self.processTextWithAI(transcribedText, overrideSystemPrompt: promptTest.draftPromptText)
@@ -1715,6 +1760,7 @@ struct ContentView: View {
 
         // If this was a rewrite recording, process the rewrite instead of typing
         if wasRewriteMode {
+            self.realtimeTextboxOutput.cancelSession()
             DebugLogger.shared.info("Processing rewrite with instruction: \(transcribedText)", source: "ContentView")
             let appInfo = self.recordingAppInfo ?? self.getCurrentAppInfo()
             await self.processRewriteWithVoiceInstruction(transcribedText, appInfo: appInfo)
@@ -1731,6 +1777,7 @@ struct ContentView: View {
 
         // If this was a command recording, process the command
         if wasCommandMode {
+            self.realtimeTextboxOutput.cancelSession()
             DebugLogger.shared.info("Processing command: \(transcribedText)", source: "ContentView")
             await self.processCommandWithVoice(transcribedText)
             AnalyticsService.shared.capture(
@@ -1812,11 +1859,19 @@ struct ContentView: View {
         )
 
         let shouldPersistOutputs = route == .normal
+        let useRealtimeTextboxBeta = shouldPersistOutputs &&
+            self.shouldUseRealtimeTextboxBeta(route: route, mode: modeAtStop) &&
+            self.realtimeTextboxOutput.activeSession != nil
+        DebugLogger.shared.info(
+            "Output route decision -> route: \(route.rawValue), shouldPersist: \(shouldPersistOutputs), realtimeTextboxBeta: \(useRealtimeTextboxBeta), activeSession: \(self.realtimeTextboxOutput.activeSession != nil)",
+            source: "ContentView"
+        )
         if !shouldPersistOutputs {
             DebugLogger.shared.info(
                 "Sandbox route active: suppressing clipboard/history/external typing side effects",
                 source: "ContentView"
             )
+            self.realtimeTextboxOutput.cancelSession()
         }
 
         let frontmostApp = NSWorkspace.shared.frontmostApplication
@@ -1838,6 +1893,7 @@ struct ContentView: View {
         // Avoid re-inserting or overwriting the clipboard in that self-target case.
         let shouldCopyToClipboard = shouldPersistOutputs &&
             SettingsStore.shared.copyTranscriptionToClipboard &&
+            !useRealtimeTextboxBeta &&
             !isFluidFrontmost
 
         if shouldCopyToClipboard {
@@ -1852,7 +1908,7 @@ struct ContentView: View {
         }
 
         var didTypeExternally = false
-        let shouldTypeExternally = shouldPersistOutputs && !isFluidFrontmost
+        let shouldTypeExternally = shouldPersistOutputs && !isFluidFrontmost && !useRealtimeTextboxBeta
 
         DebugLogger.shared.debug(
             "Typing decision → frontmost: \(frontmostName), fluidFrontmost: \(isFluidFrontmost), editorFocused: \(self.isTranscriptionFocused), willTypeExternally: \(shouldTypeExternally)",
@@ -1870,6 +1926,11 @@ struct ContentView: View {
                 finalText,
                 preferredTargetPID: typingTarget.pid
             )
+            DebugLogger.shared.info("Delivered final text via normal typing path", source: "ContentView")
+            didTypeExternally = true
+        } else if useRealtimeTextboxBeta {
+            self.realtimeTextboxOutput.finalizeSession(with: finalText)
+            DebugLogger.shared.info("Delivered final text via realtime textbox beta finalization", source: "ContentView")
             didTypeExternally = true
         }
 
@@ -1906,6 +1967,10 @@ struct ContentView: View {
                     "method": AnalyticsOutputMethod.historyOnly.rawValue,
                 ]
             )
+        }
+
+        if !useRealtimeTextboxBeta {
+            self.realtimeTextboxOutput.cancelSession()
         }
     }
 
@@ -2259,6 +2324,7 @@ struct ContentView: View {
 
         self.captureRecordingContext()
         self.setActiveRecordingMode(.dictate)
+        self.configureRealtimeTextboxStreamingIfNeeded(for: self.currentDictationOutputRouteForHotkeyStop())
 
         // Ensure normal dictation mode is set (command/rewrite modes set their own)
         if !self.isRecordingForCommand, !self.isRecordingForRewrite {
@@ -2443,6 +2509,7 @@ struct ContentView: View {
             },
             commandModeCallback: {
                 DebugLogger.shared.info("Command mode triggered", source: "ContentView")
+                self.clearRealtimeTextboxStreaming(cancelSession: true)
                 self.captureRecordingContext()
 
                 // Set flag so stopAndProcessTranscription knows to process as command
@@ -2464,6 +2531,7 @@ struct ContentView: View {
                 }
             },
             rewriteModeCallback: {
+                self.clearRealtimeTextboxStreaming(cancelSession: true)
                 self.captureRecordingContext()
 
                 // Try to capture text first while still in the other app
@@ -2537,6 +2605,9 @@ struct ContentView: View {
 
             // Reset recording mode flags
             if self.activeRecordingMode != .none {
+                if self.realtimeTextboxOutput.activeSession != nil {
+                    self.realtimeTextboxOutput.cancelAndRevertSession()
+                }
                 self.clearActiveRecordingMode()
                 handled = true
             }
@@ -2590,6 +2661,7 @@ struct ContentView: View {
 
         if self.asr.isRunning {
             DebugLogger.shared.debug("Cancel shortcut: cancelling ASR recording", source: "ContentView")
+            self.realtimeTextboxOutput.cancelAndRevertSession()
             Task { await self.asr.stopWithoutTranscription() }
             handled = true
         }
@@ -2789,6 +2861,7 @@ extension ContentView {
         self.captureRecordingContext()
         self.applyDictationShortcutSelectionContext(for: slot)
         self.setActiveRecordingMode(mode)
+        self.configureRealtimeTextboxStreamingIfNeeded(for: self.currentDictationOutputRouteForHotkeyStop())
         self.rewriteModeService.clearState()
         self.menuBarManager.setOverlayMode(.dictation)
 

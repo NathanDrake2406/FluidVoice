@@ -114,6 +114,11 @@ extension VoiceEngineSettingsView {
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.secondary)
                             self.speechModelCard(for: activeModel)
+
+                            if activeModel == .parakeetRealtime {
+                                self.realtimeTextboxBetaSection
+                                    .padding(.top, 4)
+                            }
                         }
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
@@ -668,6 +673,52 @@ extension VoiceEngineSettingsView {
                 FillerWordsEditor()
             }
         }
+    }
+
+    var realtimeTextboxBetaSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Realtime Textbox (Beta)")
+                        .font(.body)
+                    Text("Streams Parakeet Flash directly into the focused text field. Overrides live preview, paste-based insertion, and clipboard backup for compatibility. May be unreliable.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { self.settings.parakeetRealtimeTextboxEnabled },
+                        set: { self.settings.parakeetRealtimeTextboxEnabled = $0 }
+                    )
+                )
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .disabled(self.viewModel.asr.isRunning)
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                Text("Best-effort final correction only. If the target drifts during dictation, FluidVoice will skip the final replacement to avoid corrupting text.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(self.theme.palette.contentBackground.opacity(0.45))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(self.theme.palette.cardBorder.opacity(0.3), lineWidth: 1)
+                )
+        )
     }
 
     // MARK: - Speech Model Logo View
