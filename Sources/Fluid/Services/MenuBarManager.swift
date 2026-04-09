@@ -87,9 +87,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] newText in
                 guard self != nil else { return }
-                // CRITICAL FIX: Check if streaming preview is enabled before updating notch
-                // The "Show Live Preview" toggle in Preferences should control this behavior
-                if SettingsStore.shared.enableStreamingPreview {
+                if NotchOverlayManager.shared.shouldShowOrTrackLivePreviewText {
                     NotchOverlayManager.shared.updateTranscriptionText(newText)
                 }
             }
@@ -119,7 +117,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
             if NotchOverlayManager.shared.isCommandOutputExpanded {
                 // Only keep expanded notch if this is a command mode recording (follow-up)
                 // For other modes (dictation, rewrite), close it and show regular notch
-                if self.currentOverlayMode == .command {
+                if self.currentOverlayMode == .command, NotchOverlayManager.shared.supportsCommandNotchUI {
                     // Enable recording visualization in the expanded notch
                     NotchContentState.shared.setRecordingInExpandedMode(true)
 
@@ -143,7 +141,10 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
 
                 // Double-check expanded notch isn't showing (could have changed during delay)
                 // But only block if we're in command mode
-                if NotchOverlayManager.shared.isCommandOutputExpanded && self.currentOverlayMode == .command {
+                if NotchOverlayManager.shared.isCommandOutputExpanded,
+                   self.currentOverlayMode == .command,
+                   NotchOverlayManager.shared.supportsCommandNotchUI
+                {
                     self.pendingShowOperation = nil
                     return
                 }

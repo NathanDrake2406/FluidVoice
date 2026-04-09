@@ -296,27 +296,34 @@ struct ContentView: View {
 
             // Set up notch click callback for expanding command conversation
             NotchOverlayManager.shared.onNotchClicked = {
+                guard NotchOverlayManager.shared.canHandleNotchCommandTap else { return }
                 // When notch is clicked in command mode, show expanded conversation
-                if !NotchContentState.shared.commandConversationHistory.isEmpty {
+                if NotchOverlayManager.shared.canShowExpandedCommandOutput,
+                   !NotchContentState.shared.commandConversationHistory.isEmpty
+                {
                     NotchOverlayManager.shared.showExpandedCommandOutput()
                 }
             }
 
             // Set up command mode callbacks for notch
             NotchOverlayManager.shared.onCommandFollowUp = { [weak commandModeService] text in
+                guard NotchOverlayManager.shared.allowsCommandNotchActions else { return }
                 await commandModeService?.processFollowUpCommand(text)
             }
 
             // Chat management callbacks
             NotchOverlayManager.shared.onNewChat = { [weak commandModeService] in
+                guard NotchOverlayManager.shared.allowsCommandNotchActions else { return }
                 commandModeService?.createNewChat()
             }
 
             NotchOverlayManager.shared.onSwitchChat = { [weak commandModeService] chatID in
+                guard NotchOverlayManager.shared.allowsCommandNotchActions else { return }
                 commandModeService?.switchToChat(id: chatID)
             }
 
             NotchOverlayManager.shared.onClearChat = { [weak commandModeService] in
+                guard NotchOverlayManager.shared.allowsCommandNotchActions else { return }
                 commandModeService?.deleteCurrentChat()
             }
 

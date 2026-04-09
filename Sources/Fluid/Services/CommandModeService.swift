@@ -33,6 +33,10 @@ final class CommandModeService: ObservableObject {
         self.loadCurrentChatFromStore()
     }
 
+    private var shouldSyncCommandNotchState: Bool {
+        self.enableNotchOutput && NotchOverlayManager.shared.shouldSyncCommandConversationToNotch
+    }
+
     private func loadCurrentChatFromStore() {
         if let session = chatStore.currentSession {
             self.currentChatID = session.id
@@ -278,6 +282,11 @@ final class CommandModeService: ObservableObject {
 
     /// Sync conversation history to NotchContentState
     private func syncToNotchState() {
+        guard self.shouldSyncCommandNotchState else {
+            NotchContentState.shared.clearCommandOutput()
+            return
+        }
+
         NotchContentState.shared.clearCommandOutput()
 
         for msg in self.conversationHistory {
@@ -308,7 +317,7 @@ final class CommandModeService: ObservableObject {
         self.saveCurrentChat()
 
         // Push to notch
-        if self.enableNotchOutput {
+        if self.shouldSyncCommandNotchState {
             NotchContentState.shared.addCommandMessage(role: .user, content: text)
             NotchContentState.shared.setCommandProcessing(true)
         }
@@ -322,14 +331,18 @@ final class CommandModeService: ObservableObject {
 
         // Add to both histories
         self.conversationHistory.append(Message(role: .user, content: text))
-        NotchContentState.shared.addCommandMessage(role: .user, content: text)
+        if self.shouldSyncCommandNotchState {
+            NotchContentState.shared.addCommandMessage(role: .user, content: text)
+        }
 
         // Auto-save after adding user message
         self.saveCurrentChat()
 
         self.isProcessing = true
         self.didRequireConfirmationThisRun = false
-        NotchContentState.shared.setCommandProcessing(true)
+        if self.shouldSyncCommandNotchState {
+            NotchContentState.shared.setCommandProcessing(true)
+        }
 
         await self.processNextTurn()
     }
@@ -374,7 +387,7 @@ final class CommandModeService: ObservableObject {
             self.captureCommandRunCompleted(success: false)
 
             // Push to notch
-            if self.enableNotchOutput {
+            if self.shouldSyncCommandNotchState {
                 NotchContentState.shared.addCommandMessage(role: .assistant, content: errorMsg)
                 NotchContentState.shared.setCommandProcessing(false)
                 self.showExpandedNotchIfNeeded()
@@ -386,7 +399,7 @@ final class CommandModeService: ObservableObject {
         self.currentStep = .thinking("Analyzing...")
 
         // Push status to notch
-        if self.enableNotchOutput {
+        if self.shouldSyncCommandNotchState {
             NotchContentState.shared.addCommandMessage(role: .status, content: "Thinking...")
         }
 
@@ -414,7 +427,7 @@ final class CommandModeService: ObservableObject {
                 ))
 
                 // Push step to notch
-                if self.enableNotchOutput {
+                if self.shouldSyncCommandNotchState {
                     let statusText = tc.purpose ?? self.stepDescription(for: stepType)
                     NotchContentState.shared.addCommandMessage(role: .status, content: statusText)
                 }
@@ -432,7 +445,7 @@ final class CommandModeService: ObservableObject {
                     self.currentStep = nil
 
                     // Push confirmation needed to notch
-                    if self.enableNotchOutput {
+                    if self.shouldSyncCommandNotchState {
                         NotchContentState.shared.addCommandMessage(role: .status, content: "⚠️ Confirmation needed in Command Mode window")
                         NotchContentState.shared.setCommandProcessing(false)
                     }
@@ -464,7 +477,7 @@ final class CommandModeService: ObservableObject {
                 self.captureCommandRunCompleted(success: isFinal)
 
                 // Push final response to notch and show expanded view
-                if self.enableNotchOutput {
+                if self.shouldSyncCommandNotchState {
                     NotchContentState.shared.updateCommandStreamingText("") // Clear streaming
                     NotchContentState.shared.addCommandMessage(role: .assistant, content: response.content)
                     NotchContentState.shared.setCommandProcessing(false)
@@ -488,7 +501,7 @@ final class CommandModeService: ObservableObject {
             self.captureCommandRunCompleted(success: false)
 
             // Push error to notch
-            if self.enableNotchOutput {
+            if self.shouldSyncCommandNotchState {
                 NotchContentState.shared.addCommandMessage(role: .assistant, content: errorMsg)
                 NotchContentState.shared.setCommandProcessing(false)
                 self.showExpandedNotchIfNeeded()
@@ -530,7 +543,8 @@ final class CommandModeService: ObservableObject {
 
     /// Show expanded notch output if there's content to display
     private func showExpandedNotchIfNeeded() {
-        guard self.enableNotchOutput else { return }
+        guard self.shouldSyncCommandNotchState else { return }
+        guard NotchOverlayManager.shared.canShowExpandedCommandOutput else { return }
         guard !NotchContentState.shared.commandConversationHistory.isEmpty else { return }
 
         // Show the expanded notch
@@ -912,7 +926,7 @@ final class CommandModeService: ObservableObject {
                         self.streamingText = fullContent
 
                         // Push to notch for real-time display
-                        if self.enableNotchOutput {
+                        if self.shouldSyncCommandNotchState {
                             NotchContentState.shared.updateCommandStreamingText(fullContent)
                         }
                     }
@@ -928,7 +942,7 @@ final class CommandModeService: ObservableObject {
         let fullContent = self.streamingBuffer.joined()
         if !fullContent.isEmpty {
             self.streamingText = fullContent
-            if self.enableNotchOutput {
+            if self.shouldSyncCommandNotchState {
                 NotchContentState.shared.updateCommandStreamingText(fullContent)
             }
         }
@@ -945,7 +959,7 @@ final class CommandModeService: ObservableObject {
         self.thinkingBuffer = [] // Clear thinking buffer
 
         // Clear notch streaming text as well
-        if self.enableNotchOutput {
+        if self.shouldSyncCommandNotchState {
             NotchContentState.shared.updateCommandStreamingText("")
         }
 

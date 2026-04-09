@@ -1332,6 +1332,13 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Internal presentation modes for the top notch overlay.
+    /// This is intentionally separate from bottom overlay sizing.
+    enum NotchPresentationMode: String, CaseIterable, Codable {
+        case standard
+        case minimal
+    }
+
     /// Where the recording overlay appears (default: bottom)
     var overlayPosition: OverlayPosition {
         get {
@@ -1345,6 +1352,22 @@ final class SettingsStore: ObservableObject {
         set {
             objectWillChange.send()
             self.defaults.set(newValue.rawValue, forKey: Keys.overlayPosition)
+        }
+    }
+
+    /// Internal-only top notch presentation mode. No public settings UI yet.
+    var notchPresentationMode: NotchPresentationMode {
+        get {
+            guard let raw = self.defaults.string(forKey: Keys.notchPresentationMode),
+                  let mode = NotchPresentationMode(rawValue: raw)
+            else {
+                return .standard
+            }
+            return mode
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.notchPresentationMode)
         }
     }
 
@@ -3581,6 +3604,7 @@ private extension SettingsStore {
 
         // Overlay Position
         static let overlayPosition = "OverlayPosition"
+        static let notchPresentationMode = "NotchPresentationMode"
         static let overlayBottomOffset = "OverlayBottomOffset"
         static let overlayBottomOffsetMigratedTo50 = "OverlayBottomOffsetMigratedTo50"
         static let overlaySize = "OverlaySize"

@@ -286,6 +286,10 @@ struct NotchExpandedView: View {
         self.contentState.mode.notchColor
     }
 
+    private var presentationPolicy: NotchOverlayManager.NotchPresentationPolicy {
+        NotchOverlayManager.shared.currentNotchPresentationPolicy
+    }
+
     private var modeLabel: String {
         switch self.contentState.mode {
         case .dictation: return "Dictate"
@@ -315,7 +319,10 @@ struct NotchExpandedView: View {
 
     /// Check if there's command history that can be expanded
     private var canExpandCommandHistory: Bool {
-        self.contentState.mode == .command && !self.contentState.commandConversationHistory.isEmpty
+        self.presentationPolicy.allowsCommandExpansion &&
+            self.presentationPolicy.allowsCommandActions &&
+            self.contentState.mode == .command &&
+            !self.contentState.commandConversationHistory.isEmpty
     }
 
     private var normalizedOverlayMode: OverlayMode {
@@ -532,21 +539,23 @@ struct NotchExpandedView: View {
                 .frame(width: 80, height: 22)
 
                 // Mode label - shimmer effect when processing
-                if self.contentState.isProcessing {
-                    ShimmerText(text: self.processingStatusText, color: self.modeColor)
-                } else {
-                    Text(self.modeLabel)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(self.modeColor)
-                        .opacity(0.9)
-                        .onHover { hovering in
-                            self.handlePromptHover(hovering)
-                        }
+                if self.presentationPolicy.showsModeLabel {
+                    if self.contentState.isProcessing {
+                        ShimmerText(text: self.processingStatusText, color: self.modeColor)
+                    } else {
+                        Text(self.modeLabel)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(self.modeColor)
+                            .opacity(0.9)
+                            .onHover { hovering in
+                                self.handlePromptHover(hovering)
+                            }
+                    }
                 }
             }
 
             // Prompt selector
-            if !self.contentState.isProcessing {
+            if self.presentationPolicy.showsPromptSelector && !self.contentState.isProcessing {
                 ZStack(alignment: .top) {
                     HStack(spacing: 6) {
                         Text("AI Prompt:")
@@ -593,7 +602,7 @@ struct NotchExpandedView: View {
             }
 
             // Transcription preview (wrapped, fixed width)
-            if self.hasTranscription && !self.contentState.isProcessing {
+            if self.presentationPolicy.showsStreamingPreview && self.hasTranscription && !self.contentState.isProcessing {
                 let previewText = self.contentState.cachedPreviewText
                 if !previewText.isEmpty {
                     ScrollViewReader { proxy in
@@ -632,7 +641,7 @@ struct NotchExpandedView: View {
         .contentShape(Rectangle()) // Make entire area tappable
         .onTapGesture {
             // If in command mode with history, clicking expands the conversation
-            if self.canExpandCommandHistory {
+            if self.canExpandCommandHistory && NotchOverlayManager.shared.canHandleNotchCommandTap {
                 NotchOverlayManager.shared.onNotchClicked?()
             }
         }
