@@ -92,6 +92,7 @@ final class NotchOverlayManager {
     private(set) var currentNotchPresentationMode: SettingsStore.NotchPresentationMode = .standard
     private(set) var currentNotchPresentationPolicy = NotchPresentationPolicy.standard
     private(set) var currentScreenSupportsCompactPresentation = false
+    private var presentationPolicyScreen: NSScreen?
 
     private init() {
         self.refreshNotchPresentationPolicy()
@@ -206,6 +207,7 @@ final class NotchOverlayManager {
     /// Show notch overlay (original behavior)
     private func showNotchOverlay(audioLevelPublisher: AnyPublisher<CGFloat, Never>, mode: OverlayMode) {
         let targetScreen = self.preferredPresentationScreen()
+        self.presentationPolicyScreen = targetScreen
         self.refreshNotchPresentationPolicy(for: targetScreen)
         self.currentAudioPublisher = audioLevelPublisher
 
@@ -588,7 +590,7 @@ final class NotchOverlayManager {
     private func refreshNotchPresentationPolicy(for screen: NSScreen? = nil) {
         let mode = SettingsStore.shared.notchPresentationMode
         self.currentNotchPresentationMode = mode
-        let resolvedScreen = screen ?? self.preferredPresentationScreen()
+        let resolvedScreen = screen ?? self.presentationPolicyScreen ?? self.preferredPresentationScreen()
         self.currentScreenSupportsCompactPresentation = self.supportsCompactPresentation(on: resolvedScreen)
         self.currentNotchPresentationPolicy = .forMode(
             mode,
