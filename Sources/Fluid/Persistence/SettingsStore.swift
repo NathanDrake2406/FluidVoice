@@ -952,6 +952,24 @@ final class SettingsStore: ObservableObject {
         self.promptResolution(for: mode, appBundleID: appBundleID).source
     }
 
+    /// Literal placeholder that gets substituted with the raw transcription
+    /// when composing the user message for a dictation cleanup call.
+    static let transcriptPlaceholder = "${transcript}"
+
+    /// Compose the user-turn string for a dictation cleanup call by folding
+    /// the transcript into the prompt template. If the template contains the
+    /// `${transcript}` placeholder, the placeholder is replaced; otherwise
+    /// the transcript is appended after a blank line, matching the pre-PR
+    /// behaviour of sending the transcript as a separate user message.
+    static func renderDictationUserMessage(promptText: String, transcript: String) -> String {
+        if promptText.contains(transcriptPlaceholder) {
+            return promptText.replacingOccurrences(of: transcriptPlaceholder, with: transcript)
+        }
+        let trimmedPrompt = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedPrompt.isEmpty { return transcript }
+        return promptText + "\n\n" + transcript
+    }
+
     private func defaultPromptResolution(
         for mode: PromptMode,
         source: PromptResolutionSource,
