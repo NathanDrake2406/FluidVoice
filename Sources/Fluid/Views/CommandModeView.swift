@@ -1,4 +1,5 @@
 import AppKit
+import MarkdownUI
 import SwiftUI
 
 struct CommandModeView: View {
@@ -424,8 +425,8 @@ struct CommandModeView: View {
     // MARK: - Streaming Text View (Real-time AI response)
 
     private var streamingTextView: some View {
-        // Use fixedSize to prevent expensive re-layout on every update
-        Text(self.service.streamingText)
+        // Use markdown preview for streaming assistant responses
+        Markdown(self.service.streamingText)
             .font(.system(size: 13))
             .foregroundStyle(.primary.opacity(0.9))
             .padding(.horizontal, 12)
@@ -433,7 +434,6 @@ struct CommandModeView: View {
             .frame(maxWidth: 520, alignment: .leading)
             .background(self.theme.palette.contentBackground.opacity(0.9))
             .cornerRadius(8)
-            .drawingGroup() // Flatten to bitmap for faster updates
         // textSelection disabled during streaming - re-enabled in final message
     }
 
@@ -899,7 +899,7 @@ struct MessageBubble: View {
                 !self.message.content.lowercased().starts(with: "executing") &&
                 !self.message.content.lowercased().starts(with: "i'll")
             {
-                Text(self.message.content)
+                Markdown(self.message.content)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -947,7 +947,7 @@ struct MessageBubble: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 2) {
                         if !parsed.output.isEmpty {
-                            Text(self.markdownAttributedString(from: parsed.output))
+                            Text(parsed.output)
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
@@ -974,24 +974,9 @@ struct MessageBubble: View {
     // MARK: - Text Content View (Minimal)
 
     private var textContentView: some View {
-        Text(self.markdownAttributedString(from: self.message.content))
+        Markdown(self.message.content)
             .font(.system(size: 13))
             .textSelection(.enabled)
-    }
-
-    // MARK: - Markdown Rendering
-
-    private func markdownAttributedString(from text: String) -> AttributedString {
-        do {
-            let attributed = try AttributedString(
-                markdown: text,
-                options: AttributedString
-                    .MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-            )
-            return attributed
-        } catch {
-            return AttributedString(text)
-        }
     }
 
     // MARK: - Helpers
