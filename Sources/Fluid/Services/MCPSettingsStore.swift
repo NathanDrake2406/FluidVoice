@@ -22,7 +22,8 @@ actor MCPSettingsStore {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
 
-            let mcpServers = try container.decodeIfPresent([String: Server].self, forKey: .mcpServers) ?? [:]
+            let mcpServers =
+                try container.decodeIfPresent([String: Server].self, forKey: .mcpServers) ?? [:]
             self.servers = mcpServers.keys.sorted().compactMap { mcpServers[$0] }
         }
     }
@@ -113,7 +114,8 @@ actor MCPSettingsStore {
             if let transport = try container.decodeIfPresent(Transport.self, forKey: .transport) {
                 self.transport = transport
             } else if let type = try container.decodeIfPresent(String.self, forKey: .type) {
-                let normalizedType = type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let normalizedType = type.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
                 switch normalizedType {
                 case "stdio", "":
                     self.transport = .stdio
@@ -123,7 +125,8 @@ actor MCPSettingsStore {
                     throw DecodingError.dataCorruptedError(
                         forKey: .type,
                         in: container,
-                        debugDescription: "Unsupported MCP server type '\(type)'. Supported values are 'stdio' and 'http'."
+                        debugDescription:
+                            "Unsupported MCP server type '\(type)'. Supported values are 'stdio' and 'http'."
                     )
                 }
             } else if try container.decodeIfPresent(String.self, forKey: .url) != nil {
@@ -137,8 +140,10 @@ actor MCPSettingsStore {
             self.env = try container.decodeIfPresent([String: String].self, forKey: .env) ?? [:]
             self.cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
             self.url = try container.decodeIfPresent(String.self, forKey: .url)
-            self.headers = try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
-            self.timeoutSeconds = try container.decodeIfPresent(TimeInterval.self, forKey: .timeoutSeconds) ?? 30
+            self.headers =
+                try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
+            self.timeoutSeconds =
+                try container.decodeIfPresent(TimeInterval.self, forKey: .timeoutSeconds) ?? 30
         }
     }
 
@@ -157,9 +162,9 @@ actor MCPSettingsStore {
             switch self {
             case .applicationSupportUnavailable:
                 return "Could not access Application Support directory for MCP settings."
-            case let .invalidJSON(details):
+            case .invalidJSON(let details):
                 return "Invalid MCP settings.json: \(details)"
-            case let .invalidConfiguration(details):
+            case .invalidConfiguration(let details):
                 return "Invalid MCP settings configuration: \(details)"
             }
         }
@@ -173,10 +178,15 @@ actor MCPSettingsStore {
     private init() {}
 
     func settingsFileURL() throws -> URL {
-        guard let baseDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+        guard
+            let baseDirectory = FileManager.default.urls(
+                for: .applicationSupportDirectory, in: .userDomainMask
+            ).first
+        else {
             throw StoreError.applicationSupportUnavailable
         }
-        let directory = baseDirectory.appendingPathComponent(self.appSupportFolder, isDirectory: true)
+        let directory = baseDirectory.appendingPathComponent(
+            self.appSupportFolder, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appendingPathComponent(self.fileName, isDirectory: false)
     }
@@ -186,8 +196,9 @@ actor MCPSettingsStore {
         let fileURL = try self.settingsFileURL()
         guard !FileManager.default.fileExists(atPath: fileURL.path) else { return fileURL }
 
-        if let bundledURL = Bundle.main.url(forResource: self.bundledTemplateName, withExtension: "json"),
-           let data = try? Data(contentsOf: bundledURL)
+        if let bundledURL = Bundle.main.url(
+            forResource: self.bundledTemplateName, withExtension: "json"),
+            let data = try? Data(contentsOf: bundledURL)
         {
             try data.write(to: fileURL, options: .atomic)
         } else {
@@ -229,9 +240,9 @@ actor MCPSettingsStore {
         let modifiedAt = self.modifiedDate(for: fileURL)
 
         if !forceReload,
-           let cachedSettings,
-           cachedSettings.fileURL == fileURL,
-           cachedSettings.modifiedAt == modifiedAt
+            let cachedSettings,
+            cachedSettings.fileURL == fileURL,
+            cachedSettings.modifiedAt == modifiedAt
         {
             return cachedSettings
         }
@@ -254,7 +265,8 @@ actor MCPSettingsStore {
 
     private func validateAndNormalize(_ document: SettingsDocument) throws -> SettingsDocument {
         guard document.version == 1 else {
-            throw StoreError.invalidConfiguration("Unsupported settings version \(document.version). Expected version 1.")
+            throw StoreError.invalidConfiguration(
+                "Unsupported settings version \(document.version). Expected version 1.")
         }
 
         var normalizedServers: [Server] = []
@@ -263,7 +275,8 @@ actor MCPSettingsStore {
         for var server in document.servers {
             let id = server.id.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !id.isEmpty else {
-                throw StoreError.invalidConfiguration("Server id must not be empty. Use a non-empty key under 'mcpServers'.")
+                throw StoreError.invalidConfiguration(
+                    "Server id must not be empty. Use a non-empty key under 'mcpServers'.")
             }
             let normalizedID = id.lowercased()
             guard !seenIDs.contains(normalizedID) else {
@@ -272,7 +285,9 @@ actor MCPSettingsStore {
             seenIDs.insert(normalizedID)
             server.id = id
 
-            if let name = server.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            if let name = server.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !name.isEmpty
+            {
                 server.name = name
             } else {
                 server.name = nil
@@ -284,13 +299,16 @@ actor MCPSettingsStore {
             case .stdio:
                 let command = server.command?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 guard !command.isEmpty else {
-                    throw StoreError.invalidConfiguration("Server '\(id)' (stdio) requires 'command'.")
+                    throw StoreError.invalidConfiguration(
+                        "Server '\(id)' (stdio) requires 'command'.")
                 }
                 server.command = command
                 server.args = server.args
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { !$0.isEmpty }
-                if let cwd = server.cwd?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty {
+                if let cwd = server.cwd?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    !cwd.isEmpty
+                {
                     server.cwd = cwd
                 } else {
                     server.cwd = nil
@@ -300,10 +318,11 @@ actor MCPSettingsStore {
             case .http:
                 let urlString = server.url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 guard let url = URL(string: urlString),
-                      let scheme = url.scheme?.lowercased(),
-                      scheme == "http" || scheme == "https"
+                    let scheme = url.scheme?.lowercased(),
+                    scheme == "http" || scheme == "https"
                 else {
-                    throw StoreError.invalidConfiguration("Server '\(id)' (http) requires a valid http(s) 'url'.")
+                    throw StoreError.invalidConfiguration(
+                        "Server '\(id)' (http) requires a valid http(s) 'url'.")
                 }
                 server.url = urlString
                 server.command = nil
@@ -311,17 +330,19 @@ actor MCPSettingsStore {
                 server.cwd = nil
             }
 
-            server.env = Dictionary(uniqueKeysWithValues: server.env.compactMap { key, value in
-                let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmedKey.isEmpty else { return nil }
-                return (trimmedKey, value)
-            })
+            server.env = Dictionary(
+                uniqueKeysWithValues: server.env.compactMap { key, value in
+                    let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmedKey.isEmpty else { return nil }
+                    return (trimmedKey, value)
+                })
 
-            server.headers = Dictionary(uniqueKeysWithValues: server.headers.compactMap { key, value in
-                let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmedKey.isEmpty else { return nil }
-                return (trimmedKey, value)
-            })
+            server.headers = Dictionary(
+                uniqueKeysWithValues: server.headers.compactMap { key, value in
+                    let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmedKey.isEmpty else { return nil }
+                    return (trimmedKey, value)
+                })
 
             normalizedServers.append(server)
         }
@@ -331,7 +352,7 @@ actor MCPSettingsStore {
 
     private func modifiedDate(for fileURL: URL) -> Date {
         if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-           let modified = attrs[.modificationDate] as? Date
+            let modified = attrs[.modificationDate] as? Date
         {
             return modified
         }

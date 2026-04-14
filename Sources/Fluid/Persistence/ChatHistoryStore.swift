@@ -94,10 +94,13 @@ struct ChatMessage: Codable, Identifiable, Equatable {
             self.id = try container.decode(String.self, forKey: .id)
             let decodedCommand = try container.decodeIfPresent(String.self, forKey: .command)
             self.command = decodedCommand
-            self.workingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
+            self.workingDirectory = try container.decodeIfPresent(
+                String.self, forKey: .workingDirectory)
             self.purpose = try container.decodeIfPresent(String.self, forKey: .purpose)
 
-            if let name = try container.decodeIfPresent(String.self, forKey: .toolName), !name.isEmpty {
+            if let name = try container.decodeIfPresent(String.self, forKey: .toolName),
+                !name.isEmpty
+            {
                 self.toolName = name
             } else if decodedCommand?.isEmpty == false {
                 self.toolName = "execute_terminal_command"
@@ -105,7 +108,9 @@ struct ChatMessage: Codable, Identifiable, Equatable {
                 self.toolName = "unknown_tool"
             }
 
-            if let argsJSON = try container.decodeIfPresent(String.self, forKey: .argumentsJSON), !argsJSON.isEmpty {
+            if let argsJSON = try container.decodeIfPresent(String.self, forKey: .argumentsJSON),
+                !argsJSON.isEmpty
+            {
                 self.argumentsJSON = argsJSON
             } else {
                 var args: [String: Any] = [:]
@@ -119,8 +124,9 @@ struct ChatMessage: Codable, Identifiable, Equatable {
                     args["purpose"] = purpose
                 }
 
-                if let data = try? JSONSerialization.data(withJSONObject: args, options: [.sortedKeys]),
-                   let jsonString = String(data: data, encoding: .utf8)
+                if let data = try? JSONSerialization.data(
+                    withJSONObject: args, options: [.sortedKeys]),
+                    let jsonString = String(data: data, encoding: .utf8)
                 {
                     self.argumentsJSON = jsonString
                 } else {
@@ -168,10 +174,13 @@ struct ChatMessage: Codable, Identifiable, Equatable {
         self.content = try container.decodeIfPresent(String.self, forKey: .content) ?? ""
         self.toolCall = try container.decodeIfPresent(ToolCall.self, forKey: .toolCall)
         self.stepType = try container.decodeIfPresent(StepType.self, forKey: .stepType) ?? .normal
-        self.sourceToolCallID = try container.decodeIfPresent(String.self, forKey: .sourceToolCallID)
+        self.sourceToolCallID = try container.decodeIfPresent(
+            String.self, forKey: .sourceToolCallID)
         self.timestamp = try container.decodeIfPresent(Date.self, forKey: .timestamp) ?? Date()
 
-        if let decodedRenderIntent = try container.decodeIfPresent(RenderIntent.self, forKey: .renderIntent) {
+        if let decodedRenderIntent = try container.decodeIfPresent(
+            RenderIntent.self, forKey: .renderIntent)
+        {
             self.renderIntent = decodedRenderIntent
         } else {
             self.renderIntent = Self.defaultRenderIntent(for: self.role, toolCall: self.toolCall)
@@ -211,7 +220,10 @@ struct ChatSession: Codable, Identifiable, Equatable {
     var updatedAt: Date
     var messages: [ChatMessage]
 
-    init(id: String = UUID().uuidString, title: String = "New Chat", createdAt: Date = Date(), updatedAt: Date = Date(), messages: [ChatMessage] = []) {
+    init(
+        id: String = UUID().uuidString, title: String = "New Chat", createdAt: Date = Date(),
+        updatedAt: Date = Date(), messages: [ChatMessage] = []
+    ) {
         self.id = id
         self.title = title
         self.createdAt = createdAt
@@ -259,7 +271,9 @@ final class ChatHistoryStore: ObservableObject {
         self.loadSessions()
 
         // Ensure there's always a current chat
-        if self.currentChatID == nil || self.sessions.first(where: { $0.id == currentChatID }) == nil {
+        if self.currentChatID == nil
+            || self.sessions.first(where: { $0.id == currentChatID }) == nil
+        {
             if let first = sessions.first {
                 self.currentChatID = first.id
             } else {
@@ -322,7 +336,8 @@ final class ChatHistoryStore: ObservableObject {
     /// Update current chat with messages
     func updateCurrentChat(messages: [ChatMessage]) {
         guard let id = currentChatID,
-              let index = sessions.firstIndex(where: { $0.id == id }) else { return }
+            let index = sessions.firstIndex(where: { $0.id == id })
+        else { return }
 
         var session = self.sessions[index]
         session.messages = messages
@@ -373,7 +388,8 @@ final class ChatHistoryStore: ObservableObject {
     /// Clear current chat (delete messages but keep session)
     func clearCurrentChat() {
         guard let id = currentChatID,
-              let index = sessions.firstIndex(where: { $0.id == id }) else { return }
+            let index = sessions.firstIndex(where: { $0.id == id })
+        else { return }
 
         self.sessions[index].messages = []
         self.sessions[index].title = "New Chat"
@@ -386,7 +402,7 @@ final class ChatHistoryStore: ObservableObject {
 
     private func loadSessions() {
         guard let data = defaults.data(forKey: Keys.chatSessions),
-              let decoded = try? JSONDecoder().decode([ChatSession].self, from: data)
+            let decoded = try? JSONDecoder().decode([ChatSession].self, from: data)
         else {
             self.sessions = []
             return

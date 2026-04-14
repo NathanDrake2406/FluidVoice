@@ -1,9 +1,10 @@
 import Foundation
 import MCP
+
 #if canImport(System)
-import System
+    import System
 #else
-import SystemPackage
+    import SystemPackage
 #endif
 
 @MainActor
@@ -78,17 +79,17 @@ final class MCPManager {
 
         var errorDescription: String? {
             switch self {
-            case let .invalidURL(url):
+            case .invalidURL(let url):
                 return "Invalid MCP server URL: \(url)"
-            case let .missingCommand(serverID):
+            case .missingCommand(let serverID):
                 return "MCP server '\(serverID)' requires a command"
-            case let .unknownTool(name):
+            case .unknownTool(let name):
                 return "Unknown MCP tool '\(name)'"
-            case let .unavailableServer(serverID):
+            case .unavailableServer(let serverID):
                 return "MCP server '\(serverID)' is unavailable"
-            case let .invalidArguments(details):
+            case .invalidArguments(let details):
                 return "Invalid MCP tool arguments: \(details)"
-            case let .timeout(seconds):
+            case .timeout(let seconds):
                 return "MCP operation timed out after \(Int(seconds))s"
             }
         }
@@ -113,8 +114,8 @@ final class MCPManager {
             self.settingsFileURLCache = loaded.fileURL
 
             if !force,
-               let lastModifiedAt = self.lastModifiedAt,
-               lastModifiedAt == loaded.modifiedAt
+                let lastModifiedAt = self.lastModifiedAt,
+                lastModifiedAt == loaded.modifiedAt
             {
                 return
             }
@@ -129,7 +130,9 @@ final class MCPManager {
             self.cachedToolDefinitions = []
             self.toolRoutes = [:]
             await self.disconnectAllServers()
-            DebugLogger.shared.error("MCPManager: Failed loading settings.json: \(error.localizedDescription)", source: "MCPManager")
+            DebugLogger.shared.error(
+                "MCPManager: Failed loading settings.json: \(error.localizedDescription)",
+                source: "MCPManager")
         }
     }
 
@@ -171,7 +174,9 @@ final class MCPManager {
         return self.currentStatusSummary()
     }
 
-    func callTool(functionName: String, arguments: [String: Any], reloadIfNeeded: Bool = true) async -> ToolExecutionResult {
+    func callTool(functionName: String, arguments: [String: Any], reloadIfNeeded: Bool = true) async
+        -> ToolExecutionResult
+    {
         if reloadIfNeeded {
             await self.reloadConfiguration(force: false)
         }
@@ -274,7 +279,9 @@ final class MCPManager {
                 self.runtimes[server.id] = runtime
             } catch {
                 self.connectionErrors[server.id] = error.localizedDescription
-                DebugLogger.shared.error("MCPManager: Failed connecting server '\(server.id)': \(error.localizedDescription)", source: "MCPManager")
+                DebugLogger.shared.error(
+                    "MCPManager: Failed connecting server '\(server.id)': \(error.localizedDescription)",
+                    source: "MCPManager")
             }
         }
 
@@ -305,7 +312,8 @@ final class MCPManager {
         }
     }
 
-    private func connectHTTPServer(_ server: MCPSettingsStore.Server) async throws -> ServerRuntime {
+    private func connectHTTPServer(_ server: MCPSettingsStore.Server) async throws -> ServerRuntime
+    {
         guard let urlString = server.url, let endpoint = URL(string: urlString) else {
             throw MCPManagerError.invalidURL(server.url ?? "")
         }
@@ -334,7 +342,9 @@ final class MCPManager {
             try await client.listTools()
         }
 
-        DebugLogger.shared.info("MCPManager: Connected HTTP MCP server '\(server.id)' with \(tools.count) tools", source: "MCPManager")
+        DebugLogger.shared.info(
+            "MCPManager: Connected HTTP MCP server '\(server.id)' with \(tools.count) tools",
+            source: "MCPManager")
 
         return ServerRuntime(
             config: server,
@@ -343,8 +353,11 @@ final class MCPManager {
         )
     }
 
-    private func connectStdioServer(_ server: MCPSettingsStore.Server) async throws -> ServerRuntime {
-        guard let command = server.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty else {
+    private func connectStdioServer(_ server: MCPSettingsStore.Server) async throws -> ServerRuntime
+    {
+        guard let command = server.command?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !command.isEmpty
+        else {
             throw MCPManagerError.missingCommand(server.id)
         }
 
@@ -373,7 +386,8 @@ final class MCPManager {
         stdErrPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-            let lines = text
+            let lines =
+                text
                 .split(whereSeparator: { $0.isNewline })
                 .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
@@ -407,7 +421,9 @@ final class MCPManager {
                 try await client.listTools()
             }
 
-            DebugLogger.shared.info("MCPManager: Connected stdio MCP server '\(server.id)' with \(tools.count) tools", source: "MCPManager")
+            DebugLogger.shared.info(
+                "MCPManager: Connected stdio MCP server '\(server.id)' with \(tools.count) tools",
+                source: "MCPManager")
 
             return ServerRuntime(
                 config: server,
@@ -473,12 +489,15 @@ final class MCPManager {
                 )
 
                 self.cachedToolDefinitions.append(definition)
-                self.toolRoutes[openAIName] = ToolRoute(serverID: serverID, originalToolName: tool.name)
+                self.toolRoutes[openAIName] = ToolRoute(
+                    serverID: serverID, originalToolName: tool.name)
             }
         }
     }
 
-    private func uniqueToolName(serverID: String, toolName: String, usedToolNames: inout Set<String>) -> String {
+    private func uniqueToolName(
+        serverID: String, toolName: String, usedToolNames: inout Set<String>
+    ) -> String {
         let base = Self.sanitizeToolName("mcp_\(serverID)_\(toolName)")
         var candidate = base
         var counter = 2
@@ -527,7 +546,9 @@ final class MCPManager {
         return sanitized
     }
 
-    private func makeOpenAIToolDefinition(openAIName: String, tool: Tool, serverID: String) -> [String: Any] {
+    private func makeOpenAIToolDefinition(openAIName: String, tool: Tool, serverID: String)
+        -> [String: Any]
+    {
         let schemaAny = Self.foundationValue(from: tool.inputSchema)
         var parameters = schemaAny as? [String: Any] ?? [:]
         if parameters["type"] == nil {
@@ -549,13 +570,16 @@ final class MCPManager {
 
     private static func convertToolContent(_ content: Tool.Content) -> ToolExecutionContent {
         switch content {
-        case let .text(text, _, _):
-            return ToolExecutionContent(type: "text", text: text, data: nil, mimeType: nil, uri: nil, metadata: nil)
-        case let .image(data, mimeType, _, _):
-            return ToolExecutionContent(type: "image", text: nil, data: data, mimeType: mimeType, uri: nil, metadata: nil)
-        case let .audio(data, mimeType, _, _):
-            return ToolExecutionContent(type: "audio", text: nil, data: data, mimeType: mimeType, uri: nil, metadata: nil)
-        case let .resource(resource, _, _):
+        case .text(let text, _, _):
+            return ToolExecutionContent(
+                type: "text", text: text, data: nil, mimeType: nil, uri: nil, metadata: nil)
+        case .image(let data, let mimeType, _, _):
+            return ToolExecutionContent(
+                type: "image", text: nil, data: data, mimeType: mimeType, uri: nil, metadata: nil)
+        case .audio(let data, let mimeType, _, _):
+            return ToolExecutionContent(
+                type: "audio", text: nil, data: data, mimeType: mimeType, uri: nil, metadata: nil)
+        case .resource(let resource, _, _):
             return ToolExecutionContent(
                 type: "resource",
                 text: resource.text,
@@ -564,10 +588,12 @@ final class MCPManager {
                 uri: resource.uri,
                 metadata: nil
             )
-        case let .resourceLink(uri, name, title, description, mimeType, _):
+        case .resourceLink(let uri, let name, let title, let description, let mimeType, _):
             let parts = [name, title, description].compactMap { $0 }.filter { !$0.isEmpty }
             let summary = parts.isEmpty ? nil : parts.joined(separator: " - ")
-            return ToolExecutionContent(type: "resource_link", text: summary, data: nil, mimeType: mimeType, uri: uri, metadata: nil)
+            return ToolExecutionContent(
+                type: "resource_link", text: summary, data: nil, mimeType: mimeType, uri: uri,
+                metadata: nil)
         }
     }
 
@@ -603,15 +629,15 @@ final class MCPManager {
         switch value {
         case .null:
             return NSNull()
-        case let .bool(bool):
+        case .bool(let bool):
             return bool
-        case let .int(int):
+        case .int(let int):
             return int
-        case let .double(double):
+        case .double(let double):
             return double
-        case let .string(string):
+        case .string(let string):
             return string
-        case let .data(mimeType, data):
+        case .data(let mimeType, let data):
             var payload: [String: Any] = [
                 "type": "data",
                 "data": data.base64EncodedString(),
@@ -620,9 +646,9 @@ final class MCPManager {
                 payload["mimeType"] = mimeType
             }
             return payload
-        case let .array(array):
+        case .array(let array):
             return array.map(Self.foundationValue(from:))
-        case let .object(object):
+        case .object(let object):
             var mapped: [String: Any] = [:]
             mapped.reserveCapacity(object.count)
             for (key, nestedValue) in object {
@@ -685,11 +711,14 @@ final class MCPManager {
             return .object(converted)
 
         default:
-            throw MCPManagerError.invalidArguments("Unsupported argument type: \(type(of: rawValue))")
+            throw MCPManagerError.invalidArguments(
+                "Unsupported argument type: \(type(of: rawValue))")
         }
     }
 
-    private func withTimeout<T>(seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    private func withTimeout<T>(
+        seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
         let timeoutNanoseconds = UInt64(max(1, Int(seconds.rounded())) * 1_000_000_000)
 
         return try await withThrowingTaskGroup(of: T.self) { group in

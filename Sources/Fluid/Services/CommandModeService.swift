@@ -7,8 +7,8 @@ final class CommandModeService: ObservableObject {
     @Published var isProcessing = false
     @Published var pendingCommand: PendingCommand? = nil
     @Published var currentStep: AgentStep? = nil
-    @Published var streamingText: String = "" // Real-time streaming text for UI
-    @Published var streamingThinkingText: String = "" // Real-time thinking tokens for UI
+    @Published var streamingText: String = ""  // Real-time streaming text for UI
+    @Published var streamingThinkingText: String = ""  // Real-time thinking tokens for UI
     @Published private(set) var currentChatID: String?
     @Published private(set) var mcpEnabledServerCount: Int = 0
     @Published private(set) var mcpConnectedServerCount: Int = 0
@@ -34,8 +34,8 @@ final class CommandModeService: ObservableObject {
     private var lastThinkingUIUpdate: CFAbsoluteTime = 0
     private var lastNotchStreamingUIUpdate: CFAbsoluteTime = 0
     private let notchStreamingUpdateInterval: CFAbsoluteTime = 0.05
-    private var streamingBuffer: [String] = [] // Buffer tokens instead of string concat
-    private var thinkingBuffer: [String] = [] // Buffer thinking tokens
+    private var streamingBuffer: [String] = []  // Buffer tokens instead of string concat
+    private var thinkingBuffer: [String] = []  // Buffer thinking tokens
 
     // MARK: - Initialization
 
@@ -74,7 +74,7 @@ final class CommandModeService: ObservableObject {
         let id = UUID()
         let role: Role
         let content: String
-        let thinking: String? // Display-only: AI reasoning tokens (NOT sent to API)
+        let thinking: String?  // Display-only: AI reasoning tokens (NOT sent to API)
         let toolCall: ToolCall?
         let stepType: StepType
         let renderIntent: RenderIntent
@@ -97,12 +97,12 @@ final class CommandModeService: ObservableObject {
 
         enum StepType: Equatable {
             case normal
-            case thinking // AI reasoning
-            case checking // Pre-flight verification
-            case executing // Running command
-            case verifying // Post-action check
-            case success // Action completed
-            case failure // Action failed
+            case thinking  // AI reasoning
+            case checking  // Pre-flight verification
+            case executing  // Running command
+            case verifying  // Post-action check
+            case success  // Action completed
+            case failure  // Action failed
         }
 
         struct ToolCall: Equatable {
@@ -111,7 +111,7 @@ final class CommandModeService: ObservableObject {
             let argumentsJSON: String
             let command: String?
             let workingDirectory: String?
-            let purpose: String? // Why this command is being run
+            let purpose: String?  // Why this command is being run
 
             var isTerminalCommand: Bool {
                 self.toolName == "execute_terminal_command"
@@ -132,12 +132,14 @@ final class CommandModeService: ObservableObject {
             self.thinking = thinking
             self.toolCall = toolCall
             self.stepType = stepType
-            self.renderIntent = renderIntent ?? Self.defaultRenderIntent(for: role, toolCall: toolCall)
+            self.renderIntent =
+                renderIntent ?? Self.defaultRenderIntent(for: role, toolCall: toolCall)
             self.sourceToolCallID = sourceToolCallID
             self.timestamp = Date()
         }
 
-        private static func defaultRenderIntent(for role: Role, toolCall: ToolCall?) -> RenderIntent {
+        private static func defaultRenderIntent(for role: Role, toolCall: ToolCall?) -> RenderIntent
+        {
             switch role {
             case .user:
                 return .userText
@@ -172,7 +174,8 @@ final class CommandModeService: ObservableObject {
 
     func refreshMCPStatus() async {
         self.startMCPSessionBootstrapIfNeeded()
-        _ = await self.waitForMCPBootstrapIfNeeded(timeoutNanoseconds: self.mcpBootstrapWaitTimeoutNs)
+        _ = await self.waitForMCPBootstrapIfNeeded(
+            timeoutNanoseconds: self.mcpBootstrapWaitTimeoutNs)
         if self.isMCPSessionInitialized {
             await self.updateMCPStatusAndToolCache()
         }
@@ -220,7 +223,8 @@ final class CommandModeService: ObservableObject {
         self.isMCPSessionInitialized = false
 
         if Task.isCancelled {
-            DebugLogger.shared.debug("MCP bootstrap cancelled before reload", source: "CommandModeService")
+            DebugLogger.shared.debug(
+                "MCP bootstrap cancelled before reload", source: "CommandModeService")
             self.isMCPBootstrapInProgress = false
             return
         }
@@ -228,14 +232,17 @@ final class CommandModeService: ObservableObject {
         await self.mcpManager.reloadConfiguration(force: forceReload)
 
         if Task.isCancelled {
-            DebugLogger.shared.debug("MCP bootstrap cancelled after reload", source: "CommandModeService")
+            DebugLogger.shared.debug(
+                "MCP bootstrap cancelled after reload", source: "CommandModeService")
             self.isMCPBootstrapInProgress = false
             return
         }
 
         self.isMCPSessionInitialized = true
         await self.updateMCPStatusAndToolCache()
-        DebugLogger.shared.info("MCP bootstrap completed (enabled=\(self.mcpEnabledServerCount), connected=\(self.mcpConnectedServerCount), tools=\(self.cachedMCPTools.count), forced=\(forceReload))", source: "CommandModeService")
+        DebugLogger.shared.info(
+            "MCP bootstrap completed (enabled=\(self.mcpEnabledServerCount), connected=\(self.mcpConnectedServerCount), tools=\(self.cachedMCPTools.count), forced=\(forceReload))",
+            source: "CommandModeService")
         self.isMCPBootstrapInProgress = false
     }
 
@@ -367,7 +374,8 @@ final class CommandModeService: ObservableObject {
         case .tool: role = .tool
         }
 
-        let renderIntent = ChatMessage.RenderIntent(rawValue: msg.renderIntent.rawValue) ?? .assistantText
+        let renderIntent =
+            ChatMessage.RenderIntent(rawValue: msg.renderIntent.rawValue) ?? .assistantText
 
         let stepType: ChatMessage.StepType
         switch msg.stepType {
@@ -412,7 +420,8 @@ final class CommandModeService: ObservableObject {
         case .tool: role = .tool
         }
 
-        let renderIntent = Message.RenderIntent(rawValue: chatMsg.renderIntent.rawValue) ?? .assistantText
+        let renderIntent =
+            Message.RenderIntent(rawValue: chatMsg.renderIntent.rawValue) ?? .assistantText
 
         let stepType: Message.StepType
         switch chatMsg.stepType {
@@ -454,13 +463,19 @@ final class CommandModeService: ObservableObject {
         for msg in self.conversationHistory {
             switch msg.renderIntent {
             case .userText:
-                guard !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                guard !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    continue
+                }
                 NotchContentState.shared.addCommandMessage(role: .user, content: msg.content)
             case .assistantText:
-                guard !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                guard !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    continue
+                }
                 NotchContentState.shared.addCommandMessage(role: .assistant, content: msg.content)
             case .status:
-                guard !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                guard !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    continue
+                }
                 NotchContentState.shared.addCommandMessage(role: .status, content: msg.content)
             case .toolInvocation:
                 let statusText = self.notchStatusText(for: msg)
@@ -473,13 +488,17 @@ final class CommandModeService: ObservableObject {
     }
 
     private func notchStatusText(for message: Message) -> String {
-        if let purpose = message.toolCall?.purpose?.trimmingCharacters(in: .whitespacesAndNewlines), !purpose.isEmpty {
+        if let purpose = message.toolCall?.purpose?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !purpose.isEmpty
+        {
             return purpose
         }
 
         if let tc = message.toolCall {
             if tc.isTerminalCommand {
-                if let command = tc.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty {
+                if let command = tc.command?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    !command.isEmpty
+                {
                     return "Running: \(self.truncateStatusText(command, limit: 80))"
                 }
 
@@ -547,18 +566,20 @@ final class CommandModeService: ObservableObject {
         self.pendingCommand = nil
         self.isProcessing = true
 
-        await self.executeCommand(pending.command, workingDirectory: pending.workingDirectory, callId: pending.id)
+        await self.executeCommand(
+            pending.command, workingDirectory: pending.workingDirectory, callId: pending.id)
     }
 
     /// Cancel pending command
     func cancelPendingCommand() {
         self.pendingCommand = nil
-        self.conversationHistory.append(Message(
-            role: .assistant,
-            content: "Command cancelled.",
-            stepType: .failure,
-            renderIntent: .status
-        ))
+        self.conversationHistory.append(
+            Message(
+                role: .assistant,
+                content: "Command cancelled.",
+                stepType: .failure,
+                renderIntent: .status
+            ))
         self.isProcessing = false
         self.currentStep = nil
     }
@@ -567,12 +588,14 @@ final class CommandModeService: ObservableObject {
 
     private func processNextTurn() async {
         if self.currentTurnCount >= self.maxTurns {
-            let errorMsg = "Reached maximum steps limit. Please review the progress and continue if needed."
-            self.conversationHistory.append(Message(
-                role: .assistant,
-                content: errorMsg,
-                stepType: .failure
-            ))
+            let errorMsg =
+                "Reached maximum steps limit. Please review the progress and continue if needed."
+            self.conversationHistory.append(
+                Message(
+                    role: .assistant,
+                    content: errorMsg,
+                    stepType: .failure
+                ))
             self.isProcessing = false
             self.currentStep = .completed(false)
 
@@ -611,7 +634,8 @@ final class CommandModeService: ObservableObject {
                 let purpose = tc.getString("purpose")
 
                 // Determine step type based on tool kind
-                let stepType: Message.StepType = isTerminalTool
+                let stepType: Message.StepType =
+                    isTerminalTool
                     ? self.determineStepType(for: command, purpose: purpose)
                     : .executing
 
@@ -646,13 +670,16 @@ final class CommandModeService: ObservableObject {
                 if self.enableNotchOutput {
                     let statusText = self.notchStatusText(for: toolMessage)
                     if !statusText.isEmpty {
-                        NotchContentState.shared.addCommandMessage(role: .status, content: statusText)
+                        NotchContentState.shared.addCommandMessage(
+                            role: .status, content: statusText)
                     }
                 }
 
                 if isTerminalTool {
                     // Check if we need confirmation for destructive commands
-                    if SettingsStore.shared.commandModeConfirmBeforeExecute, self.isDestructiveCommand(command) {
+                    if SettingsStore.shared.commandModeConfirmBeforeExecute,
+                        self.isDestructiveCommand(command)
+                    {
                         self.didRequireConfirmationThisRun = true
                         self.pendingCommand = PendingCommand(
                             id: tc.id,
@@ -665,32 +692,38 @@ final class CommandModeService: ObservableObject {
 
                         // Push confirmation needed to notch
                         if self.enableNotchOutput {
-                            NotchContentState.shared.addCommandMessage(role: .status, content: "⚠️ Confirmation needed in Command Mode window")
+                            NotchContentState.shared.addCommandMessage(
+                                role: .status,
+                                content: "⚠️ Confirmation needed in Command Mode window")
                             NotchContentState.shared.setCommandProcessing(false)
                         }
                         return
                     }
 
                     // Auto-execute terminal tool
-                    await self.executeCommand(command, workingDirectory: workDir, callId: tc.id, purpose: purpose)
+                    await self.executeCommand(
+                        command, workingDirectory: workDir, callId: tc.id, purpose: purpose)
                 } else {
                     // Auto-execute MCP tool
                     await self.executeMCPTool(name: tc.name, arguments: tc.arguments, callId: tc.id)
                 }
 
             case .textOnly, .empty:
-                let finalContent = response.normalizedContent.isEmpty ? "I couldn't understand that." : response.normalizedContent
+                let finalContent =
+                    response.normalizedContent.isEmpty
+                    ? "I couldn't understand that." : response.normalizedContent
 
                 // Just a text response - infer whether this is a successful completion summary.
                 let isFinal = self.isSuccessfulCompletionSummary(finalContent)
 
-                self.conversationHistory.append(Message(
-                    role: .assistant,
-                    content: finalContent,
-                    thinking: response.thinking,
-                    stepType: isFinal ? .success : .normal,
-                    renderIntent: .assistantText
-                ))
+                self.conversationHistory.append(
+                    Message(
+                        role: .assistant,
+                        content: finalContent,
+                        thinking: response.thinking,
+                        stepType: isFinal ? .success : .normal,
+                        renderIntent: .assistantText
+                    ))
                 self.isProcessing = false
                 self.currentStep = .completed(isFinal)
 
@@ -701,8 +734,9 @@ final class CommandModeService: ObservableObject {
 
                 // Push final response to notch and show compact completion badge
                 if self.enableNotchOutput {
-                    NotchContentState.shared.updateCommandStreamingText("") // Clear streaming
-                    NotchContentState.shared.addCommandMessage(role: .assistant, content: finalContent)
+                    NotchContentState.shared.updateCommandStreamingText("")  // Clear streaming
+                    NotchContentState.shared.addCommandMessage(
+                        role: .assistant, content: finalContent)
                     NotchContentState.shared.setCommandProcessing(false)
                     self.showCompletionBadgeIfNeeded(success: isFinal)
                 }
@@ -710,11 +744,12 @@ final class CommandModeService: ObservableObject {
 
         } catch {
             let errorMsg = "Error: \(error.localizedDescription)"
-            self.conversationHistory.append(Message(
-                role: .assistant,
-                content: errorMsg,
-                stepType: .failure
-            ))
+            self.conversationHistory.append(
+                Message(
+                    role: .assistant,
+                    content: errorMsg,
+                    stepType: .failure
+                ))
             self.isProcessing = false
             self.currentStep = .completed(false)
 
@@ -786,7 +821,8 @@ final class CommandModeService: ObservableObject {
 
         let lowered = trimmed.lowercased()
         let failureKeywords = [
-            "failed", "failure", "error", "unable", "cannot", "can't", "could not", "couldn't", "not possible", "did not", "didn't",
+            "failed", "failure", "error", "unable", "cannot", "can't", "could not", "couldn't",
+            "not possible", "did not", "didn't",
         ]
         if failureKeywords.contains(where: { lowered.contains($0) }) {
             return false
@@ -812,11 +848,13 @@ final class CommandModeService: ObservableObject {
     }
 
     private func currentRunToolResultMessages() -> [Message] {
-        guard let lastUserIndex = self.conversationHistory.lastIndex(where: { $0.role == .user }) else {
+        guard let lastUserIndex = self.conversationHistory.lastIndex(where: { $0.role == .user })
+        else {
             return []
         }
 
-        let messagesAfterUser = self.conversationHistory.suffix(from: self.conversationHistory.index(after: lastUserIndex))
+        let messagesAfterUser = self.conversationHistory.suffix(
+            from: self.conversationHistory.index(after: lastUserIndex))
         return messagesAfterUser.filter { $0.role == .tool }
     }
 
@@ -825,12 +863,15 @@ final class CommandModeService: ObservableObject {
         let purposeLower = purpose?.lowercased() ?? ""
 
         // Check commands
-        if purposeLower.contains("check") || purposeLower.contains("verify") || purposeLower.contains("exist") {
+        if purposeLower.contains("check") || purposeLower.contains("verify")
+            || purposeLower.contains("exist")
+        {
             return .checking
         }
-        if cmd.hasPrefix("ls ") || cmd.hasPrefix("cat ") || cmd.hasPrefix("test ") || cmd.hasPrefix("[ ") ||
-            cmd.contains("--version") || cmd.contains("which ") || cmd.contains("file ") ||
-            cmd.hasPrefix("stat ") || cmd.hasPrefix("head ") || cmd.hasPrefix("tail ")
+        if cmd.hasPrefix("ls ") || cmd.hasPrefix("cat ") || cmd.hasPrefix("test ")
+            || cmd.hasPrefix("[ ") || cmd.contains("--version") || cmd.contains("which ")
+            || cmd.contains("file ") || cmd.hasPrefix("stat ") || cmd.hasPrefix("head ")
+            || cmd.hasPrefix("tail ")
         {
             return .checking
         }
@@ -857,16 +898,16 @@ final class CommandModeService: ObservableObject {
 
         // Commands that start with these are destructive
         let destructivePrefixes = [
-            "rm ", "rm\t", "rmdir ", "rm -", // delete
-            "mv ", "mv\t", // move/rename
-            "sudo ", // elevated privileges
-            "kill ", "pkill ", "killall ", // terminate processes
-            "chmod ", "chown ", "chgrp ", // change permissions/ownership
-            "dd ", // disk operations
-            "mkfs", "format", // filesystem formatting
-            "> ", // overwrite file
-            "truncate ", // truncate file
-            "shred ", // secure delete
+            "rm ", "rm\t", "rmdir ", "rm -",  // delete
+            "mv ", "mv\t",  // move/rename
+            "sudo ",  // elevated privileges
+            "kill ", "pkill ", "killall ",  // terminate processes
+            "chmod ", "chown ", "chgrp ",  // change permissions/ownership
+            "dd ",  // disk operations
+            "mkfs", "format",  // filesystem formatting
+            "> ",  // overwrite file
+            "truncate ",  // truncate file
+            "shred ",  // secure delete
         ]
 
         // Check if command starts with any destructive prefix
@@ -896,15 +937,18 @@ final class CommandModeService: ObservableObject {
 
     private func encodeToolArgumentsJSON(_ arguments: [String: Any]) -> String {
         guard JSONSerialization.isValidJSONObject(arguments),
-              let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]),
-              let jsonString = String(data: data, encoding: .utf8)
+            let data = try? JSONSerialization.data(
+                withJSONObject: arguments, options: [.sortedKeys]),
+            let jsonString = String(data: data, encoding: .utf8)
         else {
             return "{}"
         }
         return jsonString
     }
 
-    private func executeCommand(_ command: String, workingDirectory: String?, callId: String, purpose: String? = nil) async {
+    private func executeCommand(
+        _ command: String, workingDirectory: String?, callId: String, purpose: String? = nil
+    ) async {
         self.currentStep = .executing(command)
 
         let result = await terminalService.execute(
@@ -924,13 +968,14 @@ final class CommandModeService: ObservableObject {
         let resultStepType: Message.StepType = result.success ? .success : .failure
 
         // Add tool result to conversation
-        self.conversationHistory.append(Message(
-            role: .tool,
-            content: resultJSON,
-            stepType: resultStepType,
-            renderIntent: .toolResult,
-            sourceToolCallID: callId
-        ))
+        self.conversationHistory.append(
+            Message(
+                role: .tool,
+                content: resultJSON,
+                stepType: resultStepType,
+                renderIntent: .toolResult,
+                sourceToolCallID: callId
+            ))
 
         // Continue the loop - let the AI see the result and decide what to do next
         await self.processNextTurn()
@@ -940,7 +985,8 @@ final class CommandModeService: ObservableObject {
         self.currentStep = .executing(name)
 
         let startTime = Date()
-        let result = await self.mcpManager.callTool(functionName: name, arguments: arguments, reloadIfNeeded: false)
+        let result = await self.mcpManager.callTool(
+            functionName: name, arguments: arguments, reloadIfNeeded: false)
         let executionTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
 
         let enhancedResult = EnhancedMCPToolResult(
@@ -957,13 +1003,14 @@ final class CommandModeService: ObservableObject {
         let resultJSON = enhancedResult.toJSON()
         let resultStepType: Message.StepType = result.success ? .success : .failure
 
-        self.conversationHistory.append(Message(
-            role: .tool,
-            content: resultJSON,
-            stepType: resultStepType,
-            renderIntent: .toolResult,
-            sourceToolCallID: callId
-        ))
+        self.conversationHistory.append(
+            Message(
+                role: .tool,
+                content: resultJSON,
+                stepType: resultStepType,
+                renderIntent: .toolResult,
+                sourceToolCallID: callId
+            ))
 
         await self.updateMCPStatusAndToolCache()
 
@@ -996,13 +1043,13 @@ final class CommandModeService: ObservableObject {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             if let data = try? encoder.encode(self),
-               let json = String(data: data, encoding: .utf8)
+                let json = String(data: data, encoding: .utf8)
             {
                 return json
             }
             return """
-            {"success": \(self.success), "output": "\(self.output)", "exitCode": \(self.exitCode)}
-            """
+                {"success": \(self.success), "output": "\(self.output)", "exitCode": \(self.exitCode)}
+                """
         }
     }
 
@@ -1020,7 +1067,7 @@ final class CommandModeService: ObservableObject {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             if let data = try? encoder.encode(self),
-               let json = String(data: data, encoding: .utf8)
+                let json = String(data: data, encoding: .utf8)
             {
                 return json
             }
@@ -1032,7 +1079,7 @@ final class CommandModeService: ObservableObject {
 
     private struct LLMResponse {
         let content: String
-        let thinking: String? // Display-only, NOT sent back to API
+        let thinking: String?  // Display-only, NOT sent back to API
         let toolCalls: [ToolCallData]
 
         enum TurnKind {
@@ -1093,115 +1140,115 @@ final class CommandModeService: ObservableObject {
 
         // Build conversation with agentic system prompt
         let systemPrompt = """
-        You are an autonomous, thoughtful macOS terminal agent. Execute user requests reliably and safely.
-        You may also be given MCP tools in addition to terminal access. Use MCP tools when they are a better fit than shell commands.
-        If you use terminal commands, follow the pre-flight/execute/verify workflow strictly.
+            You are an autonomous, thoughtful macOS terminal agent. Execute user requests reliably and safely.
+            You may also be given MCP tools in addition to terminal access. Use MCP tools when they are a better fit than shell commands.
+            If you use terminal commands, follow the pre-flight/execute/verify workflow strictly.
 
-        ## AGENTIC WORKFLOW (Follow this pattern):
+            ## AGENTIC WORKFLOW (Follow this pattern):
 
-        ### 1. PRE-FLIGHT CHECKS (Always do this first!)
-        Before ANY action, verify prerequisites:
-        - File operations: Check if file/folder exists first (`ls`, `test -e`, `[ -f file ]`)
-        - Deletions: List contents before removing, confirm target exists
-        - Modifications: Read current state before changing
-        - Installations: Check if already installed (`which`, `--version`)
+            ### 1. PRE-FLIGHT CHECKS (Always do this first!)
+            Before ANY action, verify prerequisites:
+            - File operations: Check if file/folder exists first (`ls`, `test -e`, `[ -f file ]`)
+            - Deletions: List contents before removing, confirm target exists
+            - Modifications: Read current state before changing
+            - Installations: Check if already installed (`which`, `--version`)
 
-        ### 2. EXECUTE WITH CONTEXT
-        When calling execute_terminal_command, ALWAYS include a `purpose` parameter explaining:
-        - "checking" - Verifying something exists/state
-        - "executing" - Performing the main action
-        - "verifying" - Confirming the result
-        Example purposes: "Checking if image1.png exists", "Creating the backup directory", "Verifying file was deleted"
+            ### 2. EXECUTE WITH CONTEXT
+            When calling execute_terminal_command, ALWAYS include a `purpose` parameter explaining:
+            - "checking" - Verifying something exists/state
+            - "executing" - Performing the main action
+            - "verifying" - Confirming the result
+            Example purposes: "Checking if image1.png exists", "Creating the backup directory", "Verifying file was deleted"
 
-        ### 3. POST-ACTION VERIFICATION
-        After modifying anything, verify it worked:
-        - Created file? `ls` to confirm it exists
-        - Deleted file? `ls` to confirm it's gone
-        - Modified content? `cat` or `head` to verify changes
-        - Installed app? Check version/existence
+            ### 3. POST-ACTION VERIFICATION
+            After modifying anything, verify it worked:
+            - Created file? `ls` to confirm it exists
+            - Deleted file? `ls` to confirm it's gone
+            - Modified content? `cat` or `head` to verify changes
+            - Installed app? Check version/existence
 
-        ### 4. HANDLE FAILURES GRACEFULLY
-        - If something doesn't exist: Tell the user clearly
-        - If command fails: Analyze error, try alternative approach
-        - If permission denied: Explain and suggest solutions
-        - Never assume success without verification
+            ### 4. HANDLE FAILURES GRACEFULLY
+            - If something doesn't exist: Tell the user clearly
+            - If command fails: Analyze error, try alternative approach
+            - If permission denied: Explain and suggest solutions
+            - Never assume success without verification
 
-        ## INTENT NORMALIZATION (CRITICAL FOR USER-FACING CONTENT):
-        Before executing any action, rewrite the user's request into a clean action payload.
-        Separate:
-        - Instruction wrapper (what to do, who to send to, where to create)
-        - User-facing payload (the actual message/body/title/content)
+            ## INTENT NORMALIZATION (CRITICAL FOR USER-FACING CONTENT):
+            Before executing any action, rewrite the user's request into a clean action payload.
+            Separate:
+            - Instruction wrapper (what to do, who to send to, where to create)
+            - User-facing payload (the actual message/body/title/content)
 
-        Never include instruction phrasing in sent/saved content.
-        For "send/tell/message/email X saying ...", only the text after "saying/that/with message" is the message body.
+            Never include instruction phrasing in sent/saved content.
+            For "send/tell/message/email X saying ...", only the text after "saying/that/with message" is the message body.
 
-        Examples:
-        - User: "Send a message to Alex saying we can grab dinner"
-          -> recipient: Alex
-          -> message body: "we can grab dinner"
-          -> DO NOT send: "Send a message to Alex saying we can grab dinner"
+            Examples:
+            - User: "Send a message to Alex saying we can grab dinner"
+              -> recipient: Alex
+              -> message body: "we can grab dinner"
+              -> DO NOT send: "Send a message to Alex saying we can grab dinner"
 
-        - User: "Create a reminder to call mom tomorrow"
-          -> reminder title: "call mom"
-          -> due date: tomorrow
+            - User: "Create a reminder to call mom tomorrow"
+              -> reminder title: "call mom"
+              -> due date: tomorrow
 
-        - User: "Write a note titled Grocery List with eggs, milk, bread"
-          -> note title: "Grocery List"
-          -> note body: "eggs, milk, bread"
+            - User: "Write a note titled Grocery List with eggs, milk, bread"
+              -> note title: "Grocery List"
+              -> note body: "eggs, milk, bread"
 
-        If payload extraction is ambiguous, choose the most literal minimal user-intended content.
+            If payload extraction is ambiguous, choose the most literal minimal user-intended content.
 
-        ## RESPONSE FORMAT:
-        - Keep reasoning brief and clear
-        - State what you're checking/doing before each command
-        - After verification, give a clear success/failure summary
-        - Use natural language, not code comments
+            ## RESPONSE FORMAT:
+            - Keep reasoning brief and clear
+            - State what you're checking/doing before each command
+            - After verification, give a clear success/failure summary
+            - Use natural language, not code comments
 
-        ## SAFETY RULES:
-        - For destructive ops (rm, mv, overwrite): ALWAYS check target exists first
-        - Show what will be affected before destroying
-        - Prefer `rm -i` or listing contents before bulk deletes
-        - Use full absolute paths when possible
+            ## SAFETY RULES:
+            - For destructive ops (rm, mv, overwrite): ALWAYS check target exists first
+            - Show what will be affected before destroying
+            - Prefer `rm -i` or listing contents before bulk deletes
+            - Use full absolute paths when possible
 
-        ## EXAMPLES OF GOOD BEHAVIOR:
+            ## EXAMPLES OF GOOD BEHAVIOR:
 
-        User: "Delete image1.png in Downloads"
-        You: First check if it exists
-        → execute_terminal_command(command: "ls -la ~/Downloads/image1.png", purpose: "Checking if image1.png exists")
-        If exists → execute_terminal_command(command: "rm ~/Downloads/image1.png", purpose: "Deleting the file")
-        Then verify → execute_terminal_command(command: "ls ~/Downloads/image1.png 2>&1", purpose: "Verifying file was deleted")
-        Finally: "✓ Successfully deleted image1.png from Downloads."
+            User: "Delete image1.png in Downloads"
+            You: First check if it exists
+            → execute_terminal_command(command: "ls -la ~/Downloads/image1.png", purpose: "Checking if image1.png exists")
+            If exists → execute_terminal_command(command: "rm ~/Downloads/image1.png", purpose: "Deleting the file")
+            Then verify → execute_terminal_command(command: "ls ~/Downloads/image1.png 2>&1", purpose: "Verifying file was deleted")
+            Finally: "✓ Successfully deleted image1.png from Downloads."
 
-        User: "Create a project folder with a readme"
-        You: → Check if folder exists, create it, create readme, verify both
+            User: "Create a project folder with a readme"
+            You: → Check if folder exists, create it, create readme, verify both
 
-        ## NATIVE macOS APP CONTROL (Use osascript if there are no MCPs configured):
-        For Reminders, Notes, Calendar, Messages, Mail, and other native macOS apps, use `osascript`:
+            ## NATIVE macOS APP CONTROL (Use osascript if there are no MCPs configured):
+            For Reminders, Notes, Calendar, Messages, Mail, and other native macOS apps, use `osascript`:
 
-        ### Reminders:
-        - Create reminder (default list): `osascript -e 'tell application "Reminders" to make new reminder with properties {name:"<text>"}'`
-        - Create in specific list: `osascript -e 'tell application "Reminders" to make new reminder at end of list "<ListName>" with properties {name:"<text>"}'`
-        - With due date: `osascript -e 'tell application "Reminders" to make new reminder with properties {name:"<text>", due date:date "12/25/2024 3:00 PM"}'`
-        - ⚠️ Do NOT use `reminders list 1` syntax - it causes errors. Use `list "<name>"` or omit the list entirely.
+            ### Reminders:
+            - Create reminder (default list): `osascript -e 'tell application "Reminders" to make new reminder with properties {name:"<text>"}'`
+            - Create in specific list: `osascript -e 'tell application "Reminders" to make new reminder at end of list "<ListName>" with properties {name:"<text>"}'`
+            - With due date: `osascript -e 'tell application "Reminders" to make new reminder with properties {name:"<text>", due date:date "12/25/2024 3:00 PM"}'`
+            - ⚠️ Do NOT use `reminders list 1` syntax - it causes errors. Use `list "<name>"` or omit the list entirely.
 
-        ### Notes:
-        - Create note: `osascript -e 'tell application "Notes" to make new note at folder "Notes" with properties {name:"<title>", body:"<content>"}'`
+            ### Notes:
+            - Create note: `osascript -e 'tell application "Notes" to make new note at folder "Notes" with properties {name:"<title>", body:"<content>"}'`
 
-        ### Calendar:
-        - Create event: `osascript -e 'tell application "Calendar" to tell calendar "<CalendarName>" to make new event with properties {summary:"<title>", start date:date "<date>", end date:date "<date>"}'`
+            ### Calendar:
+            - Create event: `osascript -e 'tell application "Calendar" to tell calendar "<CalendarName>" to make new event with properties {summary:"<title>", start date:date "<date>", end date:date "<date>"}'`
 
-        ### Messages:
-        - Send iMessage: `osascript -e 'tell application "Messages" to send "<message>" to buddy "<phone/email>"'`
+            ### Messages:
+            - Send iMessage: `osascript -e 'tell application "Messages" to send "<message>" to buddy "<phone/email>"'`
 
-        ### General Pattern:
-        Always use `osascript -e 'tell application "<AppName>" to ...'` for native app automation.
+            ### General Pattern:
+            Always use `osascript -e 'tell application "<AppName>" to ...'` for native app automation.
 
-        The user is on macOS with zsh shell. Be thorough but efficient.
-        When task is complete, provide a clear summary starting with ✓ or ✗.
-        """
+            The user is on macOS with zsh shell. Be thorough but efficient.
+            When task is complete, provide a clear summary starting with ✓ or ✗.
+            """
 
         var messages: [[String: Any]] = [
-            ["role": "system", "content": systemPrompt],
+            ["role": "system", "content": systemPrompt]
         ]
 
         // Add conversation history
@@ -1217,14 +1264,16 @@ final class CommandModeService: ObservableObject {
                     messages.append([
                         "role": "assistant",
                         "content": msg.content,
-                        "tool_calls": [[
-                            "id": tc.id,
-                            "type": "function",
-                            "function": [
-                                "name": tc.toolName,
-                                "arguments": tc.argumentsJSON.isEmpty ? "{}" : tc.argumentsJSON,
-                            ],
-                        ]],
+                        "tool_calls": [
+                            [
+                                "id": tc.id,
+                                "type": "function",
+                                "function": [
+                                    "name": tc.toolName,
+                                    "arguments": tc.argumentsJSON.isEmpty ? "{}" : tc.argumentsJSON,
+                                ],
+                            ]
+                        ],
                     ])
                 } else {
                     messages.append(["role": "assistant", "content": msg.content])
@@ -1246,7 +1295,8 @@ final class CommandModeService: ObservableObject {
         let isTemperatureUnsupported = settings.isTemperatureUnsupported(model)
 
         // Get reasoning config for this model (e.g., reasoning_effort, enable_thinking)
-        let reasoningConfig = SettingsStore.shared.getReasoningConfig(forModel: model, provider: providerID)
+        let reasoningConfig = SettingsStore.shared.getReasoningConfig(
+            forModel: model, provider: providerID)
         var extraParams: [String: Any] = [:]
         if let rConfig = reasoningConfig, rConfig.isEnabled {
             if rConfig.parameterName == "enable_thinking" {
@@ -1254,7 +1304,9 @@ final class CommandModeService: ObservableObject {
             } else {
                 extraParams = [rConfig.parameterName: rConfig.parameterValue]
             }
-            DebugLogger.shared.debug("Added reasoning param: \(rConfig.parameterName)=\(rConfig.parameterValue)", source: "CommandModeService")
+            DebugLogger.shared.debug(
+                "Added reasoning param: \(rConfig.parameterName)=\(rConfig.parameterValue)",
+                source: "CommandModeService")
         }
 
         // Reset streaming state
@@ -1268,9 +1320,12 @@ final class CommandModeService: ObservableObject {
 
         // MCP bootstrap runs in the background. If it's not ready quickly, proceed with terminal-only tools.
         self.startMCPSessionBootstrapIfNeeded()
-        let mcpReadyForThisTurn = await self.waitForMCPBootstrapIfNeeded(timeoutNanoseconds: self.mcpBootstrapWaitTimeoutNs)
+        let mcpReadyForThisTurn = await self.waitForMCPBootstrapIfNeeded(
+            timeoutNanoseconds: self.mcpBootstrapWaitTimeoutNs)
         if !mcpReadyForThisTurn, self.cachedMCPTools.isEmpty {
-            DebugLogger.shared.info("MCP bootstrap still in progress; continuing this turn with terminal-only tools", source: "CommandModeService")
+            DebugLogger.shared.info(
+                "MCP bootstrap still in progress; continuing this turn with terminal-only tools",
+                source: "CommandModeService")
         }
         let allTools = [TerminalService.toolDefinition] + self.cachedMCPTools
 
@@ -1285,7 +1340,9 @@ final class CommandModeService: ObservableObject {
             temperature: isReasoningModel ? nil : 0.1,
             tools: [TerminalService.toolDefinition],
             temperature: isTemperatureUnsupported ? nil : 0.1,
-            maxTokens: isReasoningModel ? 32_000 : nil, // Reasoning models like o1 need a large budget for extended thought chains
+            tools: allTools,
+            temperature: isReasoningModel ? nil : 0.1,
+            maxTokens: isReasoningModel ? 32_000 : nil,  // Reasoning models like o1 need a large budget for extended thought chains
             extraParameters: extraParams
         )
 
@@ -1325,7 +1382,8 @@ final class CommandModeService: ObservableObject {
 
                         // Push to notch for real-time display
                         if self.enableNotchOutput,
-                           now - self.lastNotchStreamingUIUpdate >= self.notchStreamingUpdateInterval
+                            now - self.lastNotchStreamingUIUpdate
+                                >= self.notchStreamingUpdateInterval
                         {
                             self.lastNotchStreamingUIUpdate = now
                             NotchContentState.shared.updateCommandStreamingText(fullContent)
@@ -1335,7 +1393,9 @@ final class CommandModeService: ObservableObject {
             }
         }
 
-        DebugLogger.shared.info("Using LLMClient for Command Mode (streaming=\(enableStreaming), messages=\(messages.count), history=\(self.conversationHistory.count), tools=\(allTools.count), mcpTools=\(self.cachedMCPTools.count), mcpReady=\(mcpReadyForThisTurn))", source: "CommandModeService")
+        DebugLogger.shared.info(
+            "Using LLMClient for Command Mode (streaming=\(enableStreaming), messages=\(messages.count), history=\(self.conversationHistory.count), tools=\(allTools.count), mcpTools=\(self.cachedMCPTools.count), mcpReady=\(mcpReadyForThisTurn))",
+            source: "CommandModeService")
 
         let response = try await LLMClient.shared.call(config)
 
@@ -1349,15 +1409,16 @@ final class CommandModeService: ObservableObject {
         }
 
         // Small delay to let the final content render, then clear
-        try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+        try? await Task.sleep(nanoseconds: 50_000_000)  // 50ms
 
         // Capture final thinking before clearing (for message storage)
-        let finalThinking = response.thinking ?? (self.thinkingBuffer.isEmpty ? nil : self.thinkingBuffer.joined())
+        let finalThinking =
+            response.thinking ?? (self.thinkingBuffer.isEmpty ? nil : self.thinkingBuffer.joined())
 
-        self.streamingText = "" // Clear streaming text when done
-        self.streamingThinkingText = "" // Clear thinking text when done
-        self.streamingBuffer = [] // Clear buffer
-        self.thinkingBuffer = [] // Clear thinking buffer
+        self.streamingText = ""  // Clear streaming text when done
+        self.streamingThinkingText = ""  // Clear thinking text when done
+        self.streamingBuffer = []  // Clear buffer
+        self.thinkingBuffer = []  // Clear thinking buffer
 
         // Clear notch streaming text as well
         if self.enableNotchOutput {
@@ -1366,7 +1427,9 @@ final class CommandModeService: ObservableObject {
 
         // Log thinking if present (for debugging)
         if let thinking = finalThinking {
-            DebugLogger.shared.debug("LLM thinking tokens extracted (\(thinking.count) chars)", source: "CommandModeService")
+            DebugLogger.shared.debug(
+                "LLM thinking tokens extracted (\(thinking.count) chars)",
+                source: "CommandModeService")
         }
 
         // Convert LLMClient.Response to our internal LLMResponse
@@ -1380,7 +1443,7 @@ final class CommandModeService: ObservableObject {
 
         return LLMResponse(
             content: response.content,
-            thinking: finalThinking, // Display-only
+            thinking: finalThinking,  // Display-only
             toolCalls: mappedToolCalls
         )
     }

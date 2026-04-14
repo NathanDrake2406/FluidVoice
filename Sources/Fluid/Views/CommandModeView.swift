@@ -87,7 +87,7 @@ struct CommandModeView: View {
                     .foregroundStyle(.white)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Color(red: 1.0, green: 0.35, blue: 0.35)) // Command mode red
+                    .background(Color(red: 1.0, green: 0.35, blue: 0.35))  // Command mode red
                     .cornerRadius(4)
 
                 Spacer()
@@ -297,7 +297,9 @@ struct CommandModeView: View {
         self.settings.commandModeConfirmBeforeExecute ? .orange : Color.fluidGreen
     }
 
-    private func headerControlChip<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+    private func headerControlChip<Content: View>(@ViewBuilder _ content: () -> Content)
+        -> some View
+    {
         content()
             .foregroundStyle(.primary)
             .padding(.horizontal, 10)
@@ -321,7 +323,8 @@ struct CommandModeView: View {
     private var howToSection: some View {
         VStack(spacing: 0) {
             // Toggle button with hover effect
-            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { self.showHowTo.toggle() } }) {
+            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { self.showHowTo.toggle() } })
+            {
                 HStack {
                     Image(systemName: "questionmark.circle")
                         .font(.caption)
@@ -334,7 +337,10 @@ struct CommandModeView: View {
                 .foregroundStyle(self.isHoveringHowTo ? .primary : .secondary)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .background(self.isHoveringHowTo ? self.theme.palette.cardBackground.opacity(0.6) : Color.clear)
+                .background(
+                    self.isHoveringHowTo
+                        ? self.theme.palette.cardBackground.opacity(0.6) : Color.clear
+                )
                 .cornerRadius(4)
             }
             .buttonStyle(.plain)
@@ -361,8 +367,10 @@ struct CommandModeView: View {
                                 .padding(.vertical, 2)
                                 .background(self.theme.palette.cardBackground.opacity(0.8))
                                 .cornerRadius(4)
-                            Text("to open Command Mode, speak your command, then press again to send.")
-                                .font(.caption)
+                            Text(
+                                "to open Command Mode, speak your command, then press again to send."
+                            )
+                            .font(.caption)
                         }
                         .foregroundStyle(.primary.opacity(0.8))
                     }
@@ -392,9 +400,11 @@ struct CommandModeView: View {
                         }
                         .font(.caption)
 
-                        Text("AI can make mistakes. Avoid dangerous commands like deleting important files. Destructive actions will ask for confirmation.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            "AI can make mistakes. Avoid dangerous commands like deleting important files. Destructive actions will ask for confirmation."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -434,7 +444,9 @@ struct CommandModeView: View {
 
                             // Show thinking tokens in collapsible section (real-time)
                             // Only show if setting is enabled AND there are thinking tokens
-                            if self.settings.showThinkingTokens && !self.service.streamingThinkingText.isEmpty {
+                            if self.settings.showThinkingTokens
+                                && !self.service.streamingThinkingText.isEmpty
+                            {
                                 self.thinkingView
                             }
 
@@ -467,7 +479,7 @@ struct CommandModeView: View {
                 // Scroll when processing starts, not on every streaming update
                 if isProcessing {
                     self.scrollToBottom(proxy)
-                    self.isThinkingExpanded = false // Collapse thinking for new request
+                    self.isThinkingExpanded = false  // Collapse thinking for new request
                 }
             }
             .onChange(of: self.service.currentStep) { _, _ in
@@ -482,7 +494,9 @@ struct CommandModeView: View {
     private var thinkingView: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header with shimmer effect - tap to expand/collapse
-            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { self.isThinkingExpanded.toggle() } }) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) { self.isThinkingExpanded.toggle() }
+            }) {
                 HStack(spacing: 8) {
                     ThinkingShimmerLabel()
 
@@ -512,12 +526,15 @@ struct CommandModeView: View {
             } else {
                 // Preview - first 150 chars
                 if !self.service.streamingThinkingText.isEmpty {
-                    Text(String(self.service.streamingThinkingText.prefix(150)) + (self.service.streamingThinkingText.count > 150 ? "..." : ""))
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary.opacity(0.7))
-                        .lineLimit(2)
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 8)
+                    Text(
+                        String(self.service.streamingThinkingText.prefix(150))
+                            + (self.service.streamingThinkingText.count > 150 ? "..." : "")
+                    )
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary.opacity(0.7))
+                    .lineLimit(2)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
                 }
             }
         }
@@ -555,10 +572,10 @@ struct CommandModeView: View {
         guard let step = service.currentStep else { return "Working..." }
         switch step {
         case .thinking: return "Thinking..."
-        case let .checking(cmd): return "Checking \(self.truncateCommand(cmd, to: 30))"
-        case let .executing(cmd): return "Running \(self.truncateCommand(cmd, to: 30))"
+        case .checking(let cmd): return "Checking \(self.truncateCommand(cmd, to: 30))"
+        case .executing(let cmd): return "Running \(self.truncateCommand(cmd, to: 30))"
         case .verifying: return "Verifying..."
-        case let .completed(success): return success ? "Done" : "Stopped"
+        case .completed(let success): return success ? "Done" : "Stopped"
         }
     }
 
@@ -660,7 +677,9 @@ struct CommandModeView: View {
                     get: { self.settings.commandModeSelectedProviderID },
                     set: { newValue in
                         // Prevent selecting disabled Apple Intelligence
-                        if newValue == "apple-intelligence-disabled" || newValue == "apple-intelligence" {
+                        if newValue == "apple-intelligence-disabled"
+                            || newValue == "apple-intelligence"
+                        {
                             self.settings.commandModeSelectedProviderID = "openai"
                         } else {
                             self.settings.commandModeSelectedProviderID = newValue
@@ -674,7 +693,9 @@ struct CommandModeView: View {
             SearchableModelPicker(
                 models: self.availableModels,
                 selectedModel: Binding(
-                    get: { self.settings.commandModeSelectedModel ?? self.availableModels.first ?? "" },
+                    get: {
+                        self.settings.commandModeSelectedModel ?? self.availableModels.first ?? ""
+                    },
                     set: { self.settings.commandModeSelectedModel = $0 }
                 ),
                 onRefresh: nil,
@@ -879,9 +900,13 @@ struct ThinkingShimmerLabel: View {
                     LinearGradient(
                         stops: [
                             .init(color: Color.primary.opacity(0.35), location: 0),
-                            .init(color: Color.primary.opacity(0.35), location: max(0, self.shimmerPhase - 0.15)),
+                            .init(
+                                color: Color.primary.opacity(0.35),
+                                location: max(0, self.shimmerPhase - 0.15)),
                             .init(color: Color.primary.opacity(0.85), location: self.shimmerPhase),
-                            .init(color: Color.primary.opacity(0.35), location: min(1, self.shimmerPhase + 0.15)),
+                            .init(
+                                color: Color.primary.opacity(0.35),
+                                location: min(1, self.shimmerPhase + 0.15)),
                             .init(color: Color.primary.opacity(0.35), location: 1),
                         ],
                         startPoint: .leading,
@@ -949,7 +974,9 @@ struct MessageBubble: View {
     private var agentMessageView: some View {
         VStack(alignment: .leading, spacing: 6) {
             // Thinking section (collapsible) - only if setting is enabled
-            if let thinking = message.thinking, !thinking.isEmpty, SettingsStore.shared.showThinkingTokens {
+            if let thinking = message.thinking, !thinking.isEmpty,
+                SettingsStore.shared.showThinkingTokens
+            {
                 self.thinkingSection(thinking)
             }
 
@@ -978,7 +1005,9 @@ struct MessageBubble: View {
     private func thinkingSection(_ thinking: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header - tap to expand/collapse
-            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { self.isThinkingExpanded.toggle() } }) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) { self.isThinkingExpanded.toggle() }
+            }) {
                 HStack(spacing: 6) {
                     HStack(spacing: 2) {
                         ForEach(0..<3, id: \.self) { _ in
@@ -1050,17 +1079,19 @@ struct MessageBubble: View {
                 }
             }
 
-            if let purpose = tc.purpose, !purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let purpose = tc.purpose,
+                !purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
                 Text(purpose)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
 
             // Reasoning text (if meaningful)
-            if !self.message.content.isEmpty &&
-                !self.message.content.lowercased().starts(with: "checking") &&
-                !self.message.content.lowercased().starts(with: "executing") &&
-                !self.message.content.lowercased().starts(with: "i'll")
+            if !self.message.content.isEmpty
+                && !self.message.content.lowercased().starts(with: "checking")
+                && !self.message.content.lowercased().starts(with: "executing")
+                && !self.message.content.lowercased().starts(with: "i'll")
             {
                 Markdown(self.message.content)
                     .font(.system(size: 12))
@@ -1172,9 +1203,10 @@ struct MessageBubble: View {
 
     private func parseToolOutput(_ json: String) -> ParsedOutput {
         guard let data = json.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
-            return ParsedOutput(success: false, output: json, error: nil, exitCode: -1, executionTime: 0)
+            return ParsedOutput(
+                success: false, output: json, error: nil, exitCode: -1, executionTime: 0)
         }
 
         return ParsedOutput(
@@ -1186,7 +1218,10 @@ struct MessageBubble: View {
         )
     }
 
-    private func operationLabel(for stepType: CommandModeService.Message.StepType, toolCall: CommandModeService.Message.ToolCall) -> String {
+    private func operationLabel(
+        for stepType: CommandModeService.Message.StepType,
+        toolCall: CommandModeService.Message.ToolCall
+    ) -> String {
         if !toolCall.isTerminalCommand {
             return "Calling MCP tool"
         }
