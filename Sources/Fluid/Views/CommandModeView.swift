@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct CommandModeView: View {
@@ -16,6 +17,7 @@ struct CommandModeView: View {
     @State private var showingClearConfirmation = false
     @State private var showHowTo = false
     @State private var isHoveringHowTo = false
+    @State private var isReloadingMCP = false
 
     @Environment(\.theme) private var theme
 
@@ -46,6 +48,7 @@ struct CommandModeView: View {
             self.updateAvailableModels()
             // Disable notch output when using in-app UI (conversation is shared but notch shouldn't show)
             self.service.enableNotchOutput = false
+            Task { await self.service.refreshMCPStatus() }
         }
         .onDisappear {
             // Re-enable notch output when leaving in-app UI
@@ -151,6 +154,34 @@ struct CommandModeView: View {
             }
             .toggleStyle(.checkbox)
             .help("Ask for confirmation before running commands")
+
+            Divider()
+                .frame(height: 20)
+                .padding(.horizontal, 4)
+
+            HStack(spacing: 6) {
+                Text(self.mcpStatusText)
+                    .font(.caption)
+                    .foregroundStyle(self.service.mcpConnectedServerCount > 0 ? Color.fluidGreen : .secondary)
+
+                Menu {
+                    Button("Open settings.json") {
+                        self.openMCPSettingsFile()
+                    }
+                    Button("Reveal settings.json") {
+                        self.revealMCPSettingsFile()
+                    }
+                    Button(self.isReloadingMCP ? "Reloading..." : "Reload MCP") {
+                        self.reloadMCPConfiguration()
+                    }
+                    .disabled(self.isReloadingMCP)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                .menuStyle(.borderlessButton)
+                .help("MCP tools settings")
+            }
         }
         .padding()
         .background(self.theme.palette.windowBackground)
@@ -616,6 +647,39 @@ struct CommandModeView: View {
             appleIntelligenceDisabledReason: "No tools"
         )
     }
+
+    private var mcpStatusText: String {
+        let connected = self.service.mcpConnectedServerCount
+        let enabled = self.service.mcpEnabledServerCount
+        return "MCP \(connected)/\(enabled)"
+    }
+
+    private func openMCPSettingsFile() {
+        Task {
+            if let url = await self.service.mcpSettingsFileURL() {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+
+    private func revealMCPSettingsFile() {
+        Task {
+            if let url = await self.service.mcpSettingsFileURL() {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+        }
+    }
+
+    private func reloadMCPConfiguration() {
+        guard !self.isReloadingMCP else { return }
+        self.isReloadingMCP = true
+        Task {
+            await self.service.reloadMCPConfiguration()
+            await MainActor.run {
+                self.isReloadingMCP = false
+            }
+        }
+    }
 }
 
 // MARK: - Shimmer Effect (Cursor-style)
@@ -841,7 +905,7 @@ struct MessageBubble: View {
             }
 
             // Command block - clean and simple
-            Text(tc.command)
+            Text(self.toolCallDisplayText(tc))
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
@@ -954,5 +1018,13 @@ struct MessageBubble: View {
             exitCode: parsed["exitCode"] as? Int ?? 0,
             executionTime: parsed["executionTimeMs"] as? Int ?? 0
         )
+    }
+
+    private func toolCallDisplayText(_ tc: CommandModeService.Message.ToolCall) -> String {
+        if let command = tc.command, !command.isEmpty {
+            return command
+        }
+        let compactArgs = tc.argumentsJSON.replacingOccurrences(of: "\n", with: "")
+        return "\(tc.toolName)(\(compactArgs))"
     }
 }

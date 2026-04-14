@@ -10,8 +10,12 @@ final class CommandModeService: ObservableObject {
     @Published var streamingText: String = "" // Real-time streaming text for UI
     @Published var streamingThinkingText: String = "" // Real-time thinking tokens for UI
     @Published private(set) var currentChatID: String?
+    @Published private(set) var mcpEnabledServerCount: Int = 0
+    @Published private(set) var mcpConnectedServerCount: Int = 0
+    @Published private(set) var mcpLastError: String?
 
     private let terminalService = TerminalService()
+    private let mcpManager = MCPManager.shared
     private let chatStore = ChatHistoryStore.shared
     private var currentTurnCount = 0
     private let maxTurns = 20
@@ -31,6 +35,9 @@ final class CommandModeService: ObservableObject {
     init() {
         // Load current chat from store
         self.loadCurrentChatFromStore()
+        Task { @MainActor in
+            await self.refreshMCPStatus()
+        }
     }
 
     private func loadCurrentChatFromStore() {
@@ -85,9 +92,15 @@ final class CommandModeService: ObservableObject {
 
         struct ToolCall: Equatable {
             let id: String
-            let command: String
+            let toolName: String
+            let argumentsJSON: String
+            let command: String?
             let workingDirectory: String?
             let purpose: String? // Why this command is being run
+
+            var isTerminalCommand: Bool {
+                self.toolName == "execute_terminal_command"
+            }
         }
 
         init(role: Role, content: String, thinking: String? = nil, toolCall: ToolCall? = nil, stepType: StepType = .normal) {
@@ -119,6 +132,22 @@ final class CommandModeService: ObservableObject {
 
         // Also clear notch state
         NotchContentState.shared.clearCommandOutput()
+    }
+
+    func refreshMCPStatus() async {
+        let summary = await self.mcpManager.statusSummary()
+        self.mcpEnabledServerCount = summary.enabledServers
+        self.mcpConnectedServerCount = summary.connectedServers
+        self.mcpLastError = summary.lastError
+    }
+
+    func reloadMCPConfiguration() async {
+        await self.mcpManager.reloadConfiguration(force: true)
+        await self.refreshMCPStatus()
+    }
+
+    func mcpSettingsFileURL() async -> URL? {
+        await self.mcpManager.settingsFileURL()
     }
 
     // MARK: - Chat Management
@@ -223,6 +252,8 @@ final class CommandModeService: ObservableObject {
         if let tc = msg.toolCall {
             toolCall = ChatMessage.ToolCall(
                 id: tc.id,
+                toolName: tc.toolName,
+                argumentsJSON: tc.argumentsJSON,
                 command: tc.command,
                 workingDirectory: tc.workingDirectory,
                 purpose: tc.purpose
@@ -262,6 +293,8 @@ final class CommandModeService: ObservableObject {
         if let tc = chatMsg.toolCall {
             toolCall = Message.ToolCall(
                 id: tc.id,
+                toolName: tc.toolName,
+                argumentsJSON: tc.argumentsJSON,
                 command: tc.command,
                 workingDirectory: tc.workingDirectory,
                 purpose: tc.purpose
@@ -393,54 +426,75 @@ final class CommandModeService: ObservableObject {
         do {
             let response = try await callLLM()
 
-            if let tc = response.toolCall {
-                // Determine step type based on command purpose
-                let stepType = self.determineStepType(for: tc.command, purpose: tc.purpose)
-                self.currentStep = stepType == .checking ? .checking(tc.command) : .executing(tc.command)
+            if let tc = response.toolCalls.first {
+                let argsJSON = self.encodeToolArgumentsJSON(tc.arguments)
+                let isTerminalTool = tc.name == "execute_terminal_command"
+                let command = tc.getString("command") ?? ""
+                let workDir = tc.getOptionalString("workingDirectory")
+                let purpose = tc.getString("purpose")
+
+                // Determine step type based on tool kind
+                let stepType: Message.StepType = isTerminalTool
+                    ? self.determineStepType(for: command, purpose: purpose)
+                    : .executing
+                let stepLabel: String
+                if isTerminalTool {
+                    stepLabel = command
+                } else {
+                    stepLabel = tc.name
+                }
+                self.currentStep = stepType == .checking ? .checking(stepLabel) : .executing(stepLabel)
+                let defaultAssistantContent = isTerminalTool ? self.stepDescription(for: stepType) : "Calling MCP tool: \(tc.name)"
 
                 // AI wants to run a command - include thinking for display
                 self.conversationHistory.append(Message(
                     role: .assistant,
-                    content: response.content.isEmpty ? self.stepDescription(for: stepType) : response.content,
+                    content: response.content.isEmpty ? defaultAssistantContent : response.content,
                     thinking: response.thinking, // Display-only
                     toolCall: Message.ToolCall(
                         id: tc.id,
-                        command: tc.command,
-                        workingDirectory: tc
-                            .workingDirectory,
-                        purpose: tc.purpose
+                        toolName: tc.name,
+                        argumentsJSON: argsJSON,
+                        command: isTerminalTool ? command : nil,
+                        workingDirectory: workDir,
+                        purpose: purpose
                     ),
                     stepType: stepType
                 ))
 
                 // Push step to notch
                 if self.enableNotchOutput {
-                    let statusText = tc.purpose ?? self.stepDescription(for: stepType)
+                    let statusText = purpose ?? (isTerminalTool ? self.stepDescription(for: stepType) : "Calling MCP tool: \(tc.name)")
                     NotchContentState.shared.addCommandMessage(role: .status, content: statusText)
                 }
 
-                // Check if we need confirmation for destructive commands
-                if SettingsStore.shared.commandModeConfirmBeforeExecute, self.isDestructiveCommand(tc.command) {
-                    self.didRequireConfirmationThisRun = true
-                    self.pendingCommand = PendingCommand(
-                        id: tc.id,
-                        command: tc.command,
-                        workingDirectory: tc.workingDirectory,
-                        purpose: tc.purpose
-                    )
-                    self.isProcessing = false
-                    self.currentStep = nil
+                if isTerminalTool {
+                    // Check if we need confirmation for destructive commands
+                    if SettingsStore.shared.commandModeConfirmBeforeExecute, self.isDestructiveCommand(command) {
+                        self.didRequireConfirmationThisRun = true
+                        self.pendingCommand = PendingCommand(
+                            id: tc.id,
+                            command: command,
+                            workingDirectory: workDir,
+                            purpose: purpose
+                        )
+                        self.isProcessing = false
+                        self.currentStep = nil
 
-                    // Push confirmation needed to notch
-                    if self.enableNotchOutput {
-                        NotchContentState.shared.addCommandMessage(role: .status, content: "⚠️ Confirmation needed in Command Mode window")
-                        NotchContentState.shared.setCommandProcessing(false)
+                        // Push confirmation needed to notch
+                        if self.enableNotchOutput {
+                            NotchContentState.shared.addCommandMessage(role: .status, content: "⚠️ Confirmation needed in Command Mode window")
+                            NotchContentState.shared.setCommandProcessing(false)
+                        }
+                        return
                     }
-                    return
-                }
 
-                // Auto-execute
-                await self.executeCommand(tc.command, workingDirectory: tc.workingDirectory, callId: tc.id, purpose: tc.purpose)
+                    // Auto-execute terminal tool
+                    await self.executeCommand(command, workingDirectory: workDir, callId: tc.id, purpose: purpose)
+                } else {
+                    // Auto-execute MCP tool
+                    await self.executeMCPTool(name: tc.name, arguments: tc.arguments, callId: tc.id)
+                }
 
             } else {
                 // Just a text response - check if it's a final summary
@@ -611,6 +665,16 @@ final class CommandModeService: ObservableObject {
         return false
     }
 
+    private func encodeToolArgumentsJSON(_ arguments: [String: Any]) -> String {
+        guard JSONSerialization.isValidJSONObject(arguments),
+              let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]),
+              let jsonString = String(data: data, encoding: .utf8)
+        else {
+            return "{}"
+        }
+        return jsonString
+    }
+
     private func executeCommand(_ command: String, workingDirectory: String?, callId: String, purpose: String? = nil) async {
         self.currentStep = .executing(command)
 
@@ -636,6 +700,39 @@ final class CommandModeService: ObservableObject {
             content: resultJSON,
             stepType: resultStepType
         ))
+
+        // Continue the loop - let the AI see the result and decide what to do next
+        await self.processNextTurn()
+    }
+
+    private func executeMCPTool(name: String, arguments: [String: Any], callId: String) async {
+        self.currentStep = .executing(name)
+
+        let startTime = Date()
+        let result = await self.mcpManager.callTool(functionName: name, arguments: arguments)
+        let executionTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
+
+        let enhancedResult = EnhancedMCPToolResult(
+            success: result.success,
+            toolName: result.toolName,
+            serverID: result.serverID,
+            output: result.output,
+            error: result.error,
+            isError: result.isError,
+            content: result.content,
+            executionTimeMs: executionTimeMs
+        )
+
+        let resultJSON = enhancedResult.toJSON()
+        let resultStepType: Message.StepType = result.success ? .success : .failure
+
+        self.conversationHistory.append(Message(
+            role: .tool,
+            content: resultJSON,
+            stepType: resultStepType
+        ))
+
+        await self.refreshMCPStatus()
 
         // Continue the loop - let the AI see the result and decide what to do next
         await self.processNextTurn()
@@ -676,18 +773,49 @@ final class CommandModeService: ObservableObject {
         }
     }
 
+    private struct EnhancedMCPToolResult: Codable {
+        let success: Bool
+        let toolName: String
+        let serverID: String?
+        let output: String
+        let error: String?
+        let isError: Bool
+        let content: [MCPManager.ToolExecutionContent]
+        let executionTimeMs: Int
+
+        func toJSON() -> String {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(self),
+               let json = String(data: data, encoding: .utf8)
+            {
+                return json
+            }
+            return "{\"success\":false,\"output\":\"<mcp-result-encode-failed>\",\"exitCode\":-1}"
+        }
+    }
+
     // MARK: - LLM Integration
 
     private struct LLMResponse {
         let content: String
         let thinking: String? // Display-only, NOT sent back to API
-        let toolCall: ToolCallData?
+        let toolCalls: [ToolCallData]
 
         struct ToolCallData {
             let id: String
-            let command: String
-            let workingDirectory: String?
-            let purpose: String?
+            let name: String
+            let arguments: [String: Any]
+
+            func getString(_ key: String) -> String? {
+                self.arguments[key] as? String
+            }
+
+            func getOptionalString(_ key: String) -> String? {
+                guard let value = self.arguments[key] as? String else { return nil }
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
         }
     }
 
@@ -710,6 +838,8 @@ final class CommandModeService: ObservableObject {
         // Build conversation with agentic system prompt
         let systemPrompt = """
         You are an autonomous, thoughtful macOS terminal agent. Execute user requests reliably and safely.
+        You may also be given MCP tools in addition to terminal access. Use MCP tools when they are a better fit than shell commands.
+        If you use terminal commands, follow the pre-flight/execute/verify workflow strictly.
 
         ## AGENTIC WORKFLOW (Follow this pattern):
 
@@ -803,17 +933,6 @@ final class CommandModeService: ObservableObject {
             case .assistant:
                 if let tc = msg.toolCall {
                     lastToolCallId = tc.id
-                    let argsJSON: String
-                    do {
-                        let data = try JSONSerialization.data(withJSONObject: [
-                            "command": tc.command,
-                            "workingDirectory": tc.workingDirectory ?? "",
-                        ])
-                        argsJSON = String(data: data, encoding: .utf8) ?? "{}"
-                    } catch {
-                        DebugLogger.shared.error("Failed to encode tool call args: \(error)", source: "CommandModeService")
-                        argsJSON = "{}"
-                    }
                     messages.append([
                         "role": "assistant",
                         "content": msg.content,
@@ -821,8 +940,8 @@ final class CommandModeService: ObservableObject {
                             "id": tc.id,
                             "type": "function",
                             "function": [
-                                "name": "execute_terminal_command",
-                                "arguments": argsJSON,
+                                "name": tc.toolName,
+                                "arguments": tc.argumentsJSON.isEmpty ? "{}" : tc.argumentsJSON,
                             ],
                         ]],
                     ])
@@ -864,6 +983,12 @@ final class CommandModeService: ObservableObject {
         self.lastUIUpdate = CFAbsoluteTimeGetCurrent()
         self.lastThinkingUIUpdate = CFAbsoluteTimeGetCurrent()
 
+        // MCP tools are loaded from user-editable settings.json.
+        // Command Mode always includes terminal + enabled MCP tools.
+        let mcpTools = await self.mcpManager.openAIToolDefinitions()
+        await self.refreshMCPStatus()
+        let allTools = [TerminalService.toolDefinition] + mcpTools
+
         // Build LLMClient configuration
         var config = LLMClient.Config(
             messages: messages,
@@ -871,7 +996,7 @@ final class CommandModeService: ObservableObject {
             baseURL: baseURL,
             apiKey: apiKey,
             streaming: enableStreaming,
-            tools: [TerminalService.toolDefinition],
+            tools: allTools,
             temperature: isReasoningModel ? nil : 0.1,
             maxTokens: isReasoningModel ? 32_000 : nil, // Reasoning models like o1 need a large budget for extended thought chains
             extraParameters: extraParams
@@ -920,7 +1045,7 @@ final class CommandModeService: ObservableObject {
             }
         }
 
-        DebugLogger.shared.info("Using LLMClient for Command Mode (streaming=\(enableStreaming), messages=\(messages.count), history=\(self.conversationHistory.count))", source: "CommandModeService")
+        DebugLogger.shared.info("Using LLMClient for Command Mode (streaming=\(enableStreaming), messages=\(messages.count), history=\(self.conversationHistory.count), tools=\(allTools.count), mcpTools=\(mcpTools.count))", source: "CommandModeService")
 
         let response = try await LLMClient.shared.call(config)
 
@@ -955,31 +1080,18 @@ final class CommandModeService: ObservableObject {
         }
 
         // Convert LLMClient.Response to our internal LLMResponse
-        // Check for tool calls
-        if let tc = response.toolCalls.first,
-           tc.name == "execute_terminal_command"
-        {
-            let command = tc.getString("command") ?? ""
-            let workDir = tc.getOptionalString("workingDirectory")
-            let purpose = tc.getString("purpose")
-
-            return LLMResponse(
-                content: response.content,
-                thinking: finalThinking, // Display-only
-                toolCall: LLMResponse.ToolCallData(
-                    id: tc.id,
-                    command: command,
-                    workingDirectory: workDir,
-                    purpose: purpose
-                )
+        let mappedToolCalls = response.toolCalls.map { toolCall in
+            LLMResponse.ToolCallData(
+                id: toolCall.id,
+                name: toolCall.name,
+                arguments: toolCall.arguments
             )
         }
 
-        // Text response only
         return LLMResponse(
             content: response.content.isEmpty ? "I couldn't understand that." : response.content,
             thinking: finalThinking, // Display-only
-            toolCall: nil
+            toolCalls: mappedToolCalls
         )
     }
 }

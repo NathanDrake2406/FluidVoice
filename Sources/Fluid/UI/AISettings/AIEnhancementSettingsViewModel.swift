@@ -577,10 +577,10 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
             } else {
                 fullURL = endpoint + "/messages"
             }
-        } else if endpoint.contains("/chat/completions") || endpoint.contains("/api/chat") || endpoint.contains("/api/generate") {
+        } else if endpoint.contains("/responses") || endpoint.contains("/chat/completions") || endpoint.contains("/api/chat") || endpoint.contains("/api/generate") {
             fullURL = endpoint
         } else {
-            fullURL = endpoint + "/chat/completions"
+            fullURL = endpoint + "/responses"
         }
 
         // Debug logging
@@ -617,6 +617,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         let requestDict: [String: Any]
         let provKey = self.providerKey(for: providerID)
         let reasoningConfig = self.settings.getReasoningConfig(forModel: trimmedModel, provider: provKey)
+        let usesChatCompletions = fullURL.contains("/chat/completions") || fullURL.contains("/api/chat") || fullURL.contains("/api/generate")
 
         if isAnthropic {
             // Anthropic API format
@@ -625,8 +626,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
                 "max_tokens": 10,
                 "messages": [["role": "user", "content": "Hi"]],
             ]
-        } else {
-            // OpenAI-compatible format
+        } else if usesChatCompletions {
             var dict: [String: Any] = [
                 "model": trimmedModel,
                 "messages": [["role": "user", "content": "test"]],
@@ -646,6 +646,25 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
                     dict[config.parameterName] = config.parameterValue
                 }
             }
+
+            requestDict = dict
+        } else {
+            var dict: [String: Any] = [
+                "model": trimmedModel,
+                "input": [["role": "user", "content": "test"]],
+                "max_output_tokens": 50,
+            ]
+
+            if let config = reasoningConfig, config.isEnabled {
+                if config.parameterName == "reasoning_effort" {
+                    dict["reasoning"] = ["effort": config.parameterValue]
+                } else if config.parameterName == "enable_thinking" {
+                    dict[config.parameterName] = config.parameterValue == "true"
+                } else {
+                    dict[config.parameterName] = config.parameterValue
+                }
+            }
+
             requestDict = dict
         }
 
@@ -724,7 +743,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
             if responseBody.contains("model") {
                 return "Invalid model '\(model)' for \(providerName). Check if the model name is correct."
             }
-            if responseBody.contains("messages") || responseBody.contains("content") {
+            if responseBody.contains("messages") || responseBody.contains("content") || responseBody.contains("input") {
                 return "Request format error for \(providerName). The API may have changed or the base URL is pointed at a different API."
             }
             return "Bad request (HTTP 400). Check that the base URL '\(endpoint)' is correct for \(providerName)."

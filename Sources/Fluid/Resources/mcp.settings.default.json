@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "altic-mcp": {
+      "enabled": false,
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/FULL/PATH/TO/altic-mcp",
+        "/FULL/PATH/TO/altic-mcp/server.py"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -64,6 +64,29 @@ https://github.com/user-attachments/assets/c57ef6d5-f0a1-4a3f-a121-637533442c24
 - **Auto-updates** with seamless restart
 - **Opt-in beta channel** for early preview builds
 
+## MCP in Command Mode
+
+FluidVoice supports MCP tools in **Command Mode** via OpenAI-compatible tool calling.
+
+- MCP config file: `~/Library/Application Support/FluidVoice/settings.json`
+- Open it from **Command Mode header → MCP menu → Open settings.json**
+- Config shape is Claude-style: top-level `mcpServers` object
+- Enable or disable servers with each server's optional `enabled` field (`true` by default)
+- Supported transports in config: `stdio` and `http` (`type` is optional for stdio)
+
+Example config:
+
+```json
+{
+  "mcpServers": {
+    "altic-mcp": {
+      "command": "uv",
+      "args": ["run", "--project", "/FULL/PATH/TO/altic-mcp", "/FULL/PATH/TO/altic-mcp/server.py"]
+    }
+  }
+}
+```
+
 ## Supported Models
 
 | Model | Best for | Language support | Download size | Hardware |

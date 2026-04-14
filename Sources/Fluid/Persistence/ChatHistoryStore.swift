@@ -36,9 +36,87 @@ struct ChatMessage: Codable, Identifiable, Equatable {
 
     struct ToolCall: Codable, Equatable {
         let id: String
-        let command: String
+        let toolName: String
+        let argumentsJSON: String
+        let command: String?
         let workingDirectory: String?
         let purpose: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case toolName
+            case argumentsJSON
+            case command
+            case workingDirectory
+            case purpose
+        }
+
+        init(
+            id: String,
+            toolName: String,
+            argumentsJSON: String,
+            command: String? = nil,
+            workingDirectory: String? = nil,
+            purpose: String? = nil
+        ) {
+            self.id = id
+            self.toolName = toolName
+            self.argumentsJSON = argumentsJSON
+            self.command = command
+            self.workingDirectory = workingDirectory
+            self.purpose = purpose
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+
+            self.id = try container.decode(String.self, forKey: .id)
+            let decodedCommand = try container.decodeIfPresent(String.self, forKey: .command)
+            self.command = decodedCommand
+            self.workingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
+            self.purpose = try container.decodeIfPresent(String.self, forKey: .purpose)
+
+            if let name = try container.decodeIfPresent(String.self, forKey: .toolName), !name.isEmpty {
+                self.toolName = name
+            } else if decodedCommand?.isEmpty == false {
+                self.toolName = "execute_terminal_command"
+            } else {
+                self.toolName = "unknown_tool"
+            }
+
+            if let argsJSON = try container.decodeIfPresent(String.self, forKey: .argumentsJSON), !argsJSON.isEmpty {
+                self.argumentsJSON = argsJSON
+            } else {
+                var args: [String: Any] = [:]
+                if let command = decodedCommand {
+                    args["command"] = command
+                }
+                if let workingDirectory = self.workingDirectory, !workingDirectory.isEmpty {
+                    args["workingDirectory"] = workingDirectory
+                }
+                if let purpose = self.purpose, !purpose.isEmpty {
+                    args["purpose"] = purpose
+                }
+
+                if let data = try? JSONSerialization.data(withJSONObject: args, options: [.sortedKeys]),
+                   let jsonString = String(data: data, encoding: .utf8)
+                {
+                    self.argumentsJSON = jsonString
+                } else {
+                    self.argumentsJSON = "{}"
+                }
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(self.id, forKey: .id)
+            try container.encode(self.toolName, forKey: .toolName)
+            try container.encode(self.argumentsJSON, forKey: .argumentsJSON)
+            try container.encodeIfPresent(self.command, forKey: .command)
+            try container.encodeIfPresent(self.workingDirectory, forKey: .workingDirectory)
+            try container.encodeIfPresent(self.purpose, forKey: .purpose)
+        }
     }
 
     init(id: UUID = UUID(), role: Role, content: String, toolCall: ToolCall? = nil, stepType: StepType = .normal, timestamp: Date = Date()) {

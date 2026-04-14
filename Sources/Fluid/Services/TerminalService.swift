@@ -20,9 +20,8 @@ final class TerminalService {
     static var toolDefinition: [String: Any] {
         return [
             "type": "function",
-            "function": [
-                "name": "execute_terminal_command",
-                "description": """
+            "name": "execute_terminal_command",
+            "description": """
                 Execute a terminal/shell command on the user's macOS computer.
                 Use this for file operations (ls, cat, mkdir, rm), git commands, brew, npm, python, or any CLI tool.
 
@@ -33,30 +32,29 @@ final class TerminalService {
 
                 Returns JSON with: success (bool), output (stdout), error (stderr), exitCode, purpose.
                 """,
-                "parameters": [
-                    "type": "object",
-                    "properties": [
-                        "command": [
-                            "type": "string",
-                            "description": "The shell command to execute (e.g., 'ls -la', 'git status', 'rm file.txt')",
-                        ],
-                        "workingDirectory": [
-                            "type": "string",
-                            "description": "Optional working directory path. Defaults to user's home directory.",
-                        ],
-                        "purpose": [
-                            "type": "string",
-                            "description": """
+            "parameters": [
+                "type": "object",
+                "properties": [
+                    "command": [
+                        "type": "string",
+                        "description": "The shell command to execute (e.g., 'ls -la', 'git status', 'rm file.txt')",
+                    ],
+                    "workingDirectory": [
+                        "type": "string",
+                        "description": "Optional working directory path. Defaults to user's home directory.",
+                    ],
+                    "purpose": [
+                        "type": "string",
+                        "description": """
                             Brief description of why this command is being run. Must be one of:
                             - 'checking' (verifying prerequisites)
                             - 'executing' (main action)
                             - 'verifying' (confirming result)
                             Example: 'Checking if config.json exists'
                             """,
-                        ],
                     ],
-                    "required": ["command", "purpose"],
                 ],
+                "required": ["command", "purpose"],
             ],
         ]
     }
