@@ -985,7 +985,7 @@ final class CommandModeService: ObservableObject {
 
         // MCP tools are loaded from user-editable settings.json.
         // Command Mode always includes terminal + enabled MCP tools.
-        let mcpTools = await self.mcpManager.openAIToolDefinitions()
+        let mcpTools = await self.mcpManager.toolDefinitions()
         await self.refreshMCPStatus()
         let allTools = [TerminalService.toolDefinition] + mcpTools
 

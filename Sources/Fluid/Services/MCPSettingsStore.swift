@@ -22,18 +22,8 @@ actor MCPSettingsStore {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
 
-            let legacyServers = try container.decodeIfPresent([Server].self, forKey: .servers) ?? []
-            let claudeServers = try container.decodeIfPresent([String: Server].self, forKey: .mcpServers) ?? [:]
-
-            if claudeServers.isEmpty {
-                self.servers = legacyServers
-                return
-            }
-
-            let claudeOrdered = claudeServers.keys.sorted().compactMap { claudeServers[$0] }
-            let claudeIDs = Set(claudeOrdered.map { $0.id.lowercased() })
-            let legacyRemainder = legacyServers.filter { !claudeIDs.contains($0.id.lowercased()) }
-            self.servers = claudeOrdered + legacyRemainder
+            let mcpServers = try container.decodeIfPresent([String: Server].self, forKey: .mcpServers) ?? [:]
+            self.servers = mcpServers.keys.sorted().compactMap { mcpServers[$0] }
         }
     }
 
@@ -247,7 +237,7 @@ actor MCPSettingsStore {
         for var server in document.servers {
             let id = server.id.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !id.isEmpty else {
-                throw StoreError.invalidConfiguration("Server id must not be empty. In Claude-style configs, use a non-empty key under 'mcpServers'.")
+                throw StoreError.invalidConfiguration("Server id must not be empty. Use a non-empty key under 'mcpServers'.")
             }
             let normalizedID = id.lowercased()
             guard !seenIDs.contains(normalizedID) else {

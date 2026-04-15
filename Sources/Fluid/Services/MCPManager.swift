@@ -133,7 +133,7 @@ final class MCPManager {
         }
     }
 
-    func openAIToolDefinitions() async -> [[String: Any]] {
+    func toolDefinitions() async -> [[String: Any]] {
         await self.reloadConfiguration(force: false)
         return self.cachedToolDefinitions
     }
