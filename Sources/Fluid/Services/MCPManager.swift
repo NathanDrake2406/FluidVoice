@@ -151,6 +151,19 @@ final class MCPManager {
         return nil
     }
 
+    func loadSettingsJSON() async throws -> String {
+        try await self.settingsStore.loadRawJSON()
+    }
+
+    func validateSettingsJSON(_ json: String) async throws {
+        _ = try await self.settingsStore.validateJSON(json)
+    }
+
+    func saveSettingsJSON(_ json: String) async throws {
+        try await self.settingsStore.saveRawJSON(json)
+        self.lastModifiedAt = nil
+    }
+
     func statusSummary(reloadIfNeeded: Bool = true) async -> StatusSummary {
         if reloadIfNeeded {
             await self.reloadConfiguration(force: false)

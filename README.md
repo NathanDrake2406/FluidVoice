@@ -69,7 +69,9 @@ https://github.com/user-attachments/assets/c57ef6d5-f0a1-4a3f-a121-637533442c24
 FluidVoice supports MCP tools in **Command Mode** via OpenAI-compatible tool calling.
 
 - MCP config file: `~/Library/Application Support/FluidVoice/settings.json`
+- Edit it in-app from **Command Mode header → MCP menu → Edit settings.json**
 - Open it from **Command Mode header → MCP menu → Open settings.json**
+- Saving in-app validates JSON and auto-reloads MCP servers
 - Config shape is Claude-style: top-level `mcpServers` object
 - Enable or disable servers with each server's optional `enabled` field (`true` by default)
 - Supported transports in config: `stdio` and `http` (`type` is optional for stdio)

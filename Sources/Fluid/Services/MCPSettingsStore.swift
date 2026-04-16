@@ -198,6 +198,32 @@ actor MCPSettingsStore {
         return fileURL
     }
 
+    func loadRawJSON() throws -> String {
+        let fileURL = try self.ensureSettingsFileExists()
+        return try String(contentsOf: fileURL, encoding: .utf8)
+    }
+
+    func validateJSON(_ json: String) throws -> SettingsDocument {
+        let data = Data(json.utf8)
+        let decoder = JSONDecoder()
+
+        let decoded: SettingsDocument
+        do {
+            decoded = try decoder.decode(SettingsDocument.self, from: data)
+        } catch {
+            throw StoreError.invalidJSON(error.localizedDescription)
+        }
+
+        return try self.validateAndNormalize(decoded)
+    }
+
+    func saveRawJSON(_ json: String) throws {
+        _ = try self.validateJSON(json)
+        let fileURL = try self.ensureSettingsFileExists()
+        try json.write(to: fileURL, atomically: true, encoding: .utf8)
+        self.cachedSettings = nil
+    }
+
     func loadSettings(forceReload: Bool = false) throws -> LoadedSettings {
         let fileURL = try self.ensureSettingsFileExists()
         let modifiedAt = self.modifiedDate(for: fileURL)

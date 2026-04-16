@@ -186,6 +186,19 @@ final class CommandModeService: ObservableObject {
         await self.mcpManager.settingsFileURL()
     }
 
+    func loadMCPSettingsJSON() async throws -> String {
+        try await self.mcpManager.loadSettingsJSON()
+    }
+
+    func validateMCPSettingsJSON(_ json: String) async throws {
+        try await self.mcpManager.validateSettingsJSON(json)
+    }
+
+    func saveMCPSettingsJSONAndReload(_ json: String) async throws {
+        try await self.mcpManager.saveSettingsJSON(json)
+        await self.reloadMCPConfiguration()
+    }
+
     private func startMCPSessionBootstrapIfNeeded() {
         if self.isMCPSessionInitialized || self.mcpBootstrapTask != nil {
             return

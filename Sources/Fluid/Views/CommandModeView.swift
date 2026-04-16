@@ -19,6 +19,7 @@ struct CommandModeView: View {
     @State private var showHowTo = false
     @State private var isHoveringHowTo = false
     @State private var isReloadingMCP = false
+    @State private var showingMCPEditor = false
 
     @Environment(\.theme) private var theme
 
@@ -62,6 +63,9 @@ struct CommandModeView: View {
         }
         .onChange(of: self.settings.commandModeSelectedProviderID) { _, _ in
             self.updateAvailableModels()
+        }
+        .sheet(isPresented: self.$showingMCPEditor) {
+            MCPSettingsEditorView(service: self.service)
         }
         .onExitCommand {
             self.onClose?()
@@ -198,6 +202,10 @@ struct CommandModeView: View {
                 Menu {
                     Text(self.mcpStatusText)
                         .font(.caption)
+
+                    Button("Edit settings.json") {
+                        self.showingMCPEditor = true
+                    }
 
                     Button("Open settings.json") {
                         self.openMCPSettingsFile()
