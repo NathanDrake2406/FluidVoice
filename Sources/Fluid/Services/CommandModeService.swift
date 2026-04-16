@@ -75,12 +75,22 @@ final class CommandModeService: ObservableObject {
         let thinking: String? // Display-only: AI reasoning tokens (NOT sent to API)
         let toolCall: ToolCall?
         let stepType: StepType
+        let renderIntent: RenderIntent
+        let sourceToolCallID: String?
         let timestamp: Date
 
         enum Role: Equatable {
             case user
             case assistant
             case tool
+        }
+
+        enum RenderIntent: String, Equatable {
+            case userText
+            case assistantText
+            case toolInvocation
+            case toolResult
+            case status
         }
 
         enum StepType: Equatable {
@@ -106,13 +116,34 @@ final class CommandModeService: ObservableObject {
             }
         }
 
-        init(role: Role, content: String, thinking: String? = nil, toolCall: ToolCall? = nil, stepType: StepType = .normal) {
+        init(
+            role: Role,
+            content: String,
+            thinking: String? = nil,
+            toolCall: ToolCall? = nil,
+            stepType: StepType = .normal,
+            renderIntent: RenderIntent? = nil,
+            sourceToolCallID: String? = nil
+        ) {
             self.role = role
             self.content = content
             self.thinking = thinking
             self.toolCall = toolCall
             self.stepType = stepType
+            self.renderIntent = renderIntent ?? Self.defaultRenderIntent(for: role, toolCall: toolCall)
+            self.sourceToolCallID = sourceToolCallID
             self.timestamp = Date()
+        }
+
+        private static func defaultRenderIntent(for role: Role, toolCall: ToolCall?) -> RenderIntent {
+            switch role {
+            case .user:
+                return .userText
+            case .tool:
+                return .toolResult
+            case .assistant:
+                return toolCall == nil ? .assistantText : .toolInvocation
+            }
         }
     }
 
@@ -321,6 +352,8 @@ final class CommandModeService: ObservableObject {
         case .tool: role = .tool
         }
 
+        let renderIntent = ChatMessage.RenderIntent(rawValue: msg.renderIntent.rawValue) ?? .assistantText
+
         let stepType: ChatMessage.StepType
         switch msg.stepType {
         case .normal: stepType = .normal
@@ -350,6 +383,8 @@ final class CommandModeService: ObservableObject {
             content: msg.content,
             toolCall: toolCall,
             stepType: stepType,
+            renderIntent: renderIntent,
+            sourceToolCallID: msg.sourceToolCallID,
             timestamp: msg.timestamp
         )
     }
@@ -361,6 +396,8 @@ final class CommandModeService: ObservableObject {
         case .assistant: role = .assistant
         case .tool: role = .tool
         }
+
+        let renderIntent = Message.RenderIntent(rawValue: chatMsg.renderIntent.rawValue) ?? .assistantText
 
         let stepType: Message.StepType
         switch chatMsg.stepType {
@@ -389,7 +426,9 @@ final class CommandModeService: ObservableObject {
             role: role,
             content: chatMsg.content,
             toolCall: toolCall,
-            stepType: stepType
+            stepType: stepType,
+            renderIntent: renderIntent,
+            sourceToolCallID: chatMsg.sourceToolCallID
         )
     }
 
@@ -398,18 +437,52 @@ final class CommandModeService: ObservableObject {
         NotchContentState.shared.clearCommandOutput()
 
         for msg in self.conversationHistory {
-            let role: NotchContentState.CommandOutputMessage.Role
-            switch msg.role {
-            case .user: role = .user
-            case .assistant: role = .assistant
-            case .tool: role = .status // Tool outputs shown as status in notch
+            switch msg.renderIntent {
+            case .userText:
+                guard !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                NotchContentState.shared.addCommandMessage(role: .user, content: msg.content)
+            case .assistantText:
+                guard !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                NotchContentState.shared.addCommandMessage(role: .assistant, content: msg.content)
+            case .status:
+                guard !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                NotchContentState.shared.addCommandMessage(role: .status, content: msg.content)
+            case .toolInvocation:
+                let statusText = self.notchStatusText(for: msg)
+                guard !statusText.isEmpty else { continue }
+                NotchContentState.shared.addCommandMessage(role: .status, content: statusText)
+            case .toolResult:
+                continue
+            }
+        }
+    }
+
+    private func notchStatusText(for message: Message) -> String {
+        if let purpose = message.toolCall?.purpose?.trimmingCharacters(in: .whitespacesAndNewlines), !purpose.isEmpty {
+            return purpose
+        }
+
+        if let tc = message.toolCall {
+            if tc.isTerminalCommand {
+                if let command = tc.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty {
+                    return "Running: \(self.truncateStatusText(command, limit: 80))"
+                }
+
+                let defaultStatus = self.stepDescription(for: message.stepType)
+                return defaultStatus.isEmpty ? "Running command..." : defaultStatus
             }
 
-            // Skip tool outputs in notch (they're verbose)
-            if msg.role == .tool { continue }
-
-            NotchContentState.shared.addCommandMessage(role: role, content: msg.content)
+            return "Calling MCP tool: \(tc.toolName)"
         }
+
+        return message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func truncateStatusText(_ text: String, limit: Int) -> String {
+        if text.count <= limit {
+            return text
+        }
+        return String(text.prefix(limit - 1)) + "..."
     }
 
     /// Process user voice/text command
@@ -466,7 +539,8 @@ final class CommandModeService: ObservableObject {
         self.conversationHistory.append(Message(
             role: .assistant,
             content: "Command cancelled.",
-            stepType: .failure
+            stepType: .failure,
+            renderIntent: .status
         ))
         self.isProcessing = false
         self.currentStep = nil
@@ -510,7 +584,9 @@ final class CommandModeService: ObservableObject {
         do {
             let response = try await callLLM()
 
-            if let tc = response.toolCalls.first {
+            switch response.turnKind {
+            case .toolCallOnly, .toolCallWithText:
+                let tc = response.toolCalls[0]
                 let argsJSON = self.encodeToolArgumentsJSON(tc.arguments)
                 let isTerminalTool = tc.name == "execute_terminal_command"
                 let command = tc.getString("command") ?? ""
@@ -521,20 +597,21 @@ final class CommandModeService: ObservableObject {
                 let stepType: Message.StepType = isTerminalTool
                     ? self.determineStepType(for: command, purpose: purpose)
                     : .executing
-                let stepLabel: String
-                if isTerminalTool {
-                    stepLabel = command
-                } else {
-                    stepLabel = tc.name
-                }
-                self.currentStep = stepType == .checking ? .checking(stepLabel) : .executing(stepLabel)
-                let defaultAssistantContent = isTerminalTool ? self.stepDescription(for: stepType) : "Calling MCP tool: \(tc.name)"
 
-                // AI wants to run a command - include thinking for display
-                self.conversationHistory.append(Message(
+                let stepLabel = isTerminalTool ? command : tc.name
+                switch stepType {
+                case .checking:
+                    self.currentStep = .checking(stepLabel)
+                case .verifying:
+                    self.currentStep = .verifying(stepLabel)
+                default:
+                    self.currentStep = .executing(stepLabel)
+                }
+
+                let toolMessage = Message(
                     role: .assistant,
-                    content: response.content.isEmpty ? defaultAssistantContent : response.content,
-                    thinking: response.thinking, // Display-only
+                    content: response.normalizedContent,
+                    thinking: response.thinking,
                     toolCall: Message.ToolCall(
                         id: tc.id,
                         toolName: tc.name,
@@ -543,13 +620,17 @@ final class CommandModeService: ObservableObject {
                         workingDirectory: workDir,
                         purpose: purpose
                     ),
-                    stepType: stepType
-                ))
+                    stepType: stepType,
+                    renderIntent: .toolInvocation
+                )
+                self.conversationHistory.append(toolMessage)
 
                 // Push step to notch
                 if self.enableNotchOutput {
-                    let statusText = purpose ?? (isTerminalTool ? self.stepDescription(for: stepType) : "Calling MCP tool: \(tc.name)")
-                    NotchContentState.shared.addCommandMessage(role: .status, content: statusText)
+                    let statusText = self.notchStatusText(for: toolMessage)
+                    if !statusText.isEmpty {
+                        NotchContentState.shared.addCommandMessage(role: .status, content: statusText)
+                    }
                 }
 
                 if isTerminalTool {
@@ -580,18 +661,22 @@ final class CommandModeService: ObservableObject {
                     await self.executeMCPTool(name: tc.name, arguments: tc.arguments, callId: tc.id)
                 }
 
-            } else {
+            case .textOnly, .empty:
+                let finalContent = response.normalizedContent.isEmpty ? "I couldn't understand that." : response.normalizedContent
+
                 // Just a text response - check if it's a final summary
-                let isFinal = response.content.lowercased().contains("complete") ||
-                    response.content.lowercased().contains("done") ||
-                    response.content.lowercased().contains("success") ||
-                    response.content.lowercased().contains("finished")
+                let lowered = finalContent.lowercased()
+                let isFinal = lowered.contains("complete") ||
+                    lowered.contains("done") ||
+                    lowered.contains("success") ||
+                    lowered.contains("finished")
 
                 self.conversationHistory.append(Message(
                     role: .assistant,
-                    content: response.content,
-                    thinking: response.thinking, // Display-only
-                    stepType: isFinal ? .success : .normal
+                    content: finalContent,
+                    thinking: response.thinking,
+                    stepType: isFinal ? .success : .normal,
+                    renderIntent: .assistantText
                 ))
                 self.isProcessing = false
                 self.currentStep = .completed(isFinal)
@@ -604,7 +689,7 @@ final class CommandModeService: ObservableObject {
                 // Push final response to notch and show expanded view
                 if self.enableNotchOutput {
                     NotchContentState.shared.updateCommandStreamingText("") // Clear streaming
-                    NotchContentState.shared.addCommandMessage(role: .assistant, content: response.content)
+                    NotchContentState.shared.addCommandMessage(role: .assistant, content: finalContent)
                     NotchContentState.shared.setCommandProcessing(false)
                     self.showExpandedNotchIfNeeded()
                 }
@@ -782,7 +867,9 @@ final class CommandModeService: ObservableObject {
         self.conversationHistory.append(Message(
             role: .tool,
             content: resultJSON,
-            stepType: resultStepType
+            stepType: resultStepType,
+            renderIntent: .toolResult,
+            sourceToolCallID: callId
         ))
 
         // Continue the loop - let the AI see the result and decide what to do next
@@ -813,7 +900,9 @@ final class CommandModeService: ObservableObject {
         self.conversationHistory.append(Message(
             role: .tool,
             content: resultJSON,
-            stepType: resultStepType
+            stepType: resultStepType,
+            renderIntent: .toolResult,
+            sourceToolCallID: callId
         ))
 
         await self.updateMCPStatusAndToolCache()
@@ -885,6 +974,29 @@ final class CommandModeService: ObservableObject {
         let content: String
         let thinking: String? // Display-only, NOT sent back to API
         let toolCalls: [ToolCallData]
+
+        enum TurnKind {
+            case toolCallOnly
+            case toolCallWithText
+            case textOnly
+            case empty
+        }
+
+        var normalizedContent: String {
+            self.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        var turnKind: TurnKind {
+            let hasToolCalls = !self.toolCalls.isEmpty
+            let hasText = !self.normalizedContent.isEmpty
+
+            switch (hasToolCalls, hasText) {
+            case (true, true): return .toolCallWithText
+            case (true, false): return .toolCallOnly
+            case (false, true): return .textOnly
+            case (false, false): return .empty
+            }
+        }
 
         struct ToolCallData {
             let id: String
@@ -1175,7 +1287,7 @@ final class CommandModeService: ObservableObject {
         }
 
         return LLMResponse(
-            content: response.content.isEmpty ? "I couldn't understand that." : response.content,
+            content: response.content,
             thinking: finalThinking, // Display-only
             toolCalls: mappedToolCalls
         )

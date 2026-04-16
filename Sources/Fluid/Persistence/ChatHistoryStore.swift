@@ -16,6 +16,8 @@ struct ChatMessage: Codable, Identifiable, Equatable {
     let content: String
     let toolCall: ToolCall?
     let stepType: StepType
+    let renderIntent: RenderIntent
+    let sourceToolCallID: String?
     let timestamp: Date
 
     enum Role: String, Codable, Equatable {
@@ -32,6 +34,25 @@ struct ChatMessage: Codable, Identifiable, Equatable {
         case verifying
         case success
         case failure
+    }
+
+    enum RenderIntent: String, Codable, Equatable {
+        case userText
+        case assistantText
+        case toolInvocation
+        case toolResult
+        case status
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case role
+        case content
+        case toolCall
+        case stepType
+        case renderIntent
+        case sourceToolCallID
+        case timestamp
     }
 
     struct ToolCall: Codable, Equatable {
@@ -119,13 +140,65 @@ struct ChatMessage: Codable, Identifiable, Equatable {
         }
     }
 
-    init(id: UUID = UUID(), role: Role, content: String, toolCall: ToolCall? = nil, stepType: StepType = .normal, timestamp: Date = Date()) {
+    init(
+        id: UUID = UUID(),
+        role: Role,
+        content: String,
+        toolCall: ToolCall? = nil,
+        stepType: StepType = .normal,
+        renderIntent: RenderIntent? = nil,
+        sourceToolCallID: String? = nil,
+        timestamp: Date = Date()
+    ) {
         self.id = id
         self.role = role
         self.content = content
         self.toolCall = toolCall
         self.stepType = stepType
+        self.renderIntent = renderIntent ?? Self.defaultRenderIntent(for: role, toolCall: toolCall)
+        self.sourceToolCallID = sourceToolCallID
         self.timestamp = timestamp
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.role = try container.decode(Role.self, forKey: .role)
+        self.content = try container.decodeIfPresent(String.self, forKey: .content) ?? ""
+        self.toolCall = try container.decodeIfPresent(ToolCall.self, forKey: .toolCall)
+        self.stepType = try container.decodeIfPresent(StepType.self, forKey: .stepType) ?? .normal
+        self.sourceToolCallID = try container.decodeIfPresent(String.self, forKey: .sourceToolCallID)
+        self.timestamp = try container.decodeIfPresent(Date.self, forKey: .timestamp) ?? Date()
+
+        if let decodedRenderIntent = try container.decodeIfPresent(RenderIntent.self, forKey: .renderIntent) {
+            self.renderIntent = decodedRenderIntent
+        } else {
+            self.renderIntent = Self.defaultRenderIntent(for: self.role, toolCall: self.toolCall)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.id, forKey: .id)
+        try container.encode(self.role, forKey: .role)
+        try container.encode(self.content, forKey: .content)
+        try container.encodeIfPresent(self.toolCall, forKey: .toolCall)
+        try container.encode(self.stepType, forKey: .stepType)
+        try container.encode(self.renderIntent, forKey: .renderIntent)
+        try container.encodeIfPresent(self.sourceToolCallID, forKey: .sourceToolCallID)
+        try container.encode(self.timestamp, forKey: .timestamp)
+    }
+
+    private static func defaultRenderIntent(for role: Role, toolCall: ToolCall?) -> RenderIntent {
+        switch role {
+        case .user:
+            return .userText
+        case .assistant:
+            return toolCall == nil ? .assistantText : .toolInvocation
+        case .tool:
+            return .toolResult
+        }
     }
 }
 

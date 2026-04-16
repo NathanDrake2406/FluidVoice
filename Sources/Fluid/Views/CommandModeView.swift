@@ -822,20 +822,21 @@ struct MessageBubble: View {
                 self.thinkingSection(thinking)
             }
 
-            // Purpose label (minimal, gray)
-            if let tc = message.toolCall, let purpose = tc.purpose {
-                Text(purpose)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-
-            // Main content
-            if self.message.role == .tool {
+            switch self.message.renderIntent {
+            case .status:
+                self.statusContentView
+            case .toolInvocation:
+                if let tc = message.toolCall {
+                    self.commandCallView(tc)
+                } else if !self.message.content.isEmpty {
+                    self.textContentView
+                }
+            case .toolResult:
                 self.toolOutputView
-            } else if let tc = message.toolCall {
-                self.commandCallView(tc)
-            } else if !self.message.content.isEmpty {
-                self.textContentView
+            case .assistantText, .userText:
+                if !self.message.content.isEmpty {
+                    self.textContentView
+                }
             }
         }
         .frame(maxWidth: 520, alignment: .leading)
@@ -904,6 +905,26 @@ struct MessageBubble: View {
 
     private func commandCallView(_ tc: CommandModeService.Message.ToolCall) -> some View {
         VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(self.operationLabel(for: self.message.stepType, toolCall: tc))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                if let shortID = self.shortCallID(tc.id) {
+                    Text(shortID)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            if let purpose = tc.purpose, !purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(purpose)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
             // Reasoning text (if meaningful)
             if !self.message.content.isEmpty &&
                 !self.message.content.lowercased().starts(with: "checking") &&
@@ -927,6 +948,18 @@ struct MessageBubble: View {
         }
     }
 
+    private var statusContentView: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Color.secondary.opacity(0.6))
+                .frame(width: 5, height: 5)
+            Text(self.message.content)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+
     // MARK: - Tool Output View (Minimal)
 
     private var toolOutputView: some View {
@@ -938,6 +971,12 @@ struct MessageBubble: View {
                 Text(parsed.success ? "Success" : "Error")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(parsed.success ? .primary : .secondary)
+
+                if let shortID = self.shortCallID(self.message.sourceToolCallID) {
+                    Text(shortID)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
 
                 Spacer()
 
@@ -1014,6 +1053,33 @@ struct MessageBubble: View {
             exitCode: parsed["exitCode"] as? Int ?? 0,
             executionTime: parsed["executionTimeMs"] as? Int ?? 0
         )
+    }
+
+    private func operationLabel(for stepType: CommandModeService.Message.StepType, toolCall: CommandModeService.Message.ToolCall) -> String {
+        if !toolCall.isTerminalCommand {
+            return "Calling MCP tool"
+        }
+
+        switch stepType {
+        case .checking:
+            return "Checking"
+        case .verifying:
+            return "Verifying"
+        case .executing:
+            return "Executing"
+        default:
+            return "Executing"
+        }
+    }
+
+    private func shortCallID(_ callID: String?) -> String? {
+        guard let callID else { return nil }
+        let trimmed = callID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.count <= 12 {
+            return trimmed
+        }
+        return String(trimmed.suffix(12))
     }
 
     private func toolCallDisplayText(_ tc: CommandModeService.Message.ToolCall) -> String {
