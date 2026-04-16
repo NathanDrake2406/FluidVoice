@@ -163,7 +163,7 @@ struct CommandModeView: View {
             HStack(spacing: 6) {
                 Text(self.mcpStatusText)
                     .font(.caption)
-                    .foregroundStyle(self.service.mcpConnectedServerCount > 0 ? Color.fluidGreen : .secondary)
+                    .foregroundStyle(self.mcpStatusColor)
 
                 Menu {
                     Button("Open settings.json") {
@@ -649,9 +649,20 @@ struct CommandModeView: View {
     }
 
     private var mcpStatusText: String {
+        if self.service.isMCPBootstrapInProgress {
+            return "MCP loading..."
+        }
+
         let connected = self.service.mcpConnectedServerCount
         let enabled = self.service.mcpEnabledServerCount
         return "MCP \(connected)/\(enabled)"
+    }
+
+    private var mcpStatusColor: Color {
+        if self.service.isMCPBootstrapInProgress {
+            return .secondary
+        }
+        return self.service.mcpConnectedServerCount > 0 ? Color.fluidGreen : .secondary
     }
 
     private func openMCPSettingsFile() {

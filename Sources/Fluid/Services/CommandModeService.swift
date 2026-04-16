@@ -13,6 +13,7 @@ final class CommandModeService: ObservableObject {
     @Published private(set) var mcpEnabledServerCount: Int = 0
     @Published private(set) var mcpConnectedServerCount: Int = 0
     @Published private(set) var mcpLastError: String?
+    @Published private(set) var isMCPBootstrapInProgress: Bool = false
 
     private let terminalService = TerminalService()
     private let mcpManager = MCPManager.shared
@@ -20,6 +21,10 @@ final class CommandModeService: ObservableObject {
     private var currentTurnCount = 0
     private let maxTurns = 20
     private var didRequireConfirmationThisRun: Bool = false
+    private var isMCPSessionInitialized: Bool = false
+    private var cachedMCPTools: [[String: Any]] = []
+    private var mcpBootstrapTask: Task<Void, Never>?
+    private let mcpBootstrapWaitTimeoutNs: UInt64 = 200_000_000
 
     // Flag to enable notch output display
     var enableNotchOutput: Bool = true
@@ -35,9 +40,7 @@ final class CommandModeService: ObservableObject {
     init() {
         // Load current chat from store
         self.loadCurrentChatFromStore()
-        Task { @MainActor in
-            await self.refreshMCPStatus()
-        }
+        self.startMCPSessionBootstrapIfNeeded()
     }
 
     private func loadCurrentChatFromStore() {
@@ -135,19 +138,100 @@ final class CommandModeService: ObservableObject {
     }
 
     func refreshMCPStatus() async {
-        let summary = await self.mcpManager.statusSummary()
-        self.mcpEnabledServerCount = summary.enabledServers
-        self.mcpConnectedServerCount = summary.connectedServers
-        self.mcpLastError = summary.lastError
+        self.startMCPSessionBootstrapIfNeeded()
+        _ = await self.waitForMCPBootstrapIfNeeded(timeoutNanoseconds: self.mcpBootstrapWaitTimeoutNs)
+        if self.isMCPSessionInitialized {
+            await self.updateMCPStatusAndToolCache()
+        }
     }
 
     func reloadMCPConfiguration() async {
-        await self.mcpManager.reloadConfiguration(force: true)
-        await self.refreshMCPStatus()
+        self.mcpBootstrapTask?.cancel()
+        self.mcpBootstrapTask = nil
+        await self.runMCPBootstrap(forceReload: true)
     }
 
     func mcpSettingsFileURL() async -> URL? {
         await self.mcpManager.settingsFileURL()
+    }
+
+    private func startMCPSessionBootstrapIfNeeded() {
+        if self.isMCPSessionInitialized || self.mcpBootstrapTask != nil {
+            return
+        }
+
+        DebugLogger.shared.debug("Starting background MCP bootstrap", source: "CommandModeService")
+        self.isMCPBootstrapInProgress = true
+        self.mcpBootstrapTask = Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            await self.runMCPBootstrap(forceReload: false)
+            self.mcpBootstrapTask = nil
+        }
+    }
+
+    private func runMCPBootstrap(forceReload: Bool) async {
+        self.isMCPBootstrapInProgress = true
+        self.isMCPSessionInitialized = false
+
+        if Task.isCancelled {
+            DebugLogger.shared.debug("MCP bootstrap cancelled before reload", source: "CommandModeService")
+            self.isMCPBootstrapInProgress = false
+            return
+        }
+
+        await self.mcpManager.reloadConfiguration(force: forceReload)
+
+        if Task.isCancelled {
+            DebugLogger.shared.debug("MCP bootstrap cancelled after reload", source: "CommandModeService")
+            self.isMCPBootstrapInProgress = false
+            return
+        }
+
+        self.isMCPSessionInitialized = true
+        await self.updateMCPStatusAndToolCache()
+        DebugLogger.shared.info("MCP bootstrap completed (enabled=\(self.mcpEnabledServerCount), connected=\(self.mcpConnectedServerCount), tools=\(self.cachedMCPTools.count), forced=\(forceReload))", source: "CommandModeService")
+        self.isMCPBootstrapInProgress = false
+    }
+
+    private func waitForMCPBootstrapIfNeeded(timeoutNanoseconds: UInt64) async -> Bool {
+        guard let bootstrapTask = self.mcpBootstrapTask else {
+            return self.isMCPSessionInitialized
+        }
+
+        let finishedWithinTimeout = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                await bootstrapTask.value
+                return true
+            }
+
+            group.addTask {
+                do {
+                    try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                    return false
+                } catch {
+                    return true
+                }
+            }
+
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+
+        if finishedWithinTimeout {
+            self.mcpBootstrapTask = nil
+        }
+
+        return self.isMCPSessionInitialized
+    }
+
+    private func updateMCPStatusAndToolCache() async {
+        self.cachedMCPTools = await self.mcpManager.toolDefinitions(reloadIfNeeded: false)
+
+        let summary = await self.mcpManager.statusSummary(reloadIfNeeded: false)
+        self.mcpEnabledServerCount = summary.enabledServers
+        self.mcpConnectedServerCount = summary.connectedServers
+        self.mcpLastError = summary.lastError
     }
 
     // MARK: - Chat Management
@@ -709,7 +793,7 @@ final class CommandModeService: ObservableObject {
         self.currentStep = .executing(name)
 
         let startTime = Date()
-        let result = await self.mcpManager.callTool(functionName: name, arguments: arguments)
+        let result = await self.mcpManager.callTool(functionName: name, arguments: arguments, reloadIfNeeded: false)
         let executionTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
 
         let enhancedResult = EnhancedMCPToolResult(
@@ -732,7 +816,7 @@ final class CommandModeService: ObservableObject {
             stepType: resultStepType
         ))
 
-        await self.refreshMCPStatus()
+        await self.updateMCPStatusAndToolCache()
 
         // Continue the loop - let the AI see the result and decide what to do next
         await self.processNextTurn()
@@ -983,11 +1067,13 @@ final class CommandModeService: ObservableObject {
         self.lastUIUpdate = CFAbsoluteTimeGetCurrent()
         self.lastThinkingUIUpdate = CFAbsoluteTimeGetCurrent()
 
-        // MCP tools are loaded from user-editable settings.json.
-        // Command Mode always includes terminal + enabled MCP tools.
-        let mcpTools = await self.mcpManager.toolDefinitions()
-        await self.refreshMCPStatus()
-        let allTools = [TerminalService.toolDefinition] + mcpTools
+        // MCP bootstrap runs in the background. If it's not ready quickly, proceed with terminal-only tools.
+        self.startMCPSessionBootstrapIfNeeded()
+        let mcpReadyForThisTurn = await self.waitForMCPBootstrapIfNeeded(timeoutNanoseconds: self.mcpBootstrapWaitTimeoutNs)
+        if !mcpReadyForThisTurn, self.cachedMCPTools.isEmpty {
+            DebugLogger.shared.info("MCP bootstrap still in progress; continuing this turn with terminal-only tools", source: "CommandModeService")
+        }
+        let allTools = [TerminalService.toolDefinition] + self.cachedMCPTools
 
         // Build LLMClient configuration
         var config = LLMClient.Config(
@@ -1045,7 +1131,7 @@ final class CommandModeService: ObservableObject {
             }
         }
 
-        DebugLogger.shared.info("Using LLMClient for Command Mode (streaming=\(enableStreaming), messages=\(messages.count), history=\(self.conversationHistory.count), tools=\(allTools.count), mcpTools=\(mcpTools.count))", source: "CommandModeService")
+        DebugLogger.shared.info("Using LLMClient for Command Mode (streaming=\(enableStreaming), messages=\(messages.count), history=\(self.conversationHistory.count), tools=\(allTools.count), mcpTools=\(self.cachedMCPTools.count), mcpReady=\(mcpReadyForThisTurn))", source: "CommandModeService")
 
         let response = try await LLMClient.shared.call(config)
 

@@ -133,8 +133,10 @@ final class MCPManager {
         }
     }
 
-    func toolDefinitions() async -> [[String: Any]] {
-        await self.reloadConfiguration(force: false)
+    func toolDefinitions(reloadIfNeeded: Bool = true) async -> [[String: Any]] {
+        if reloadIfNeeded {
+            await self.reloadConfiguration(force: false)
+        }
         return self.cachedToolDefinitions
     }
 
@@ -149,17 +151,17 @@ final class MCPManager {
         return nil
     }
 
-    func statusSummary() async -> StatusSummary {
-        await self.reloadConfiguration(force: false)
-        return StatusSummary(
-            enabledServers: self.enabledServerIDs.count,
-            connectedServers: self.runtimes.count,
-            lastError: self.lastError
-        )
+    func statusSummary(reloadIfNeeded: Bool = true) async -> StatusSummary {
+        if reloadIfNeeded {
+            await self.reloadConfiguration(force: false)
+        }
+        return self.currentStatusSummary()
     }
 
-    func callTool(functionName: String, arguments: [String: Any]) async -> ToolExecutionResult {
-        await self.reloadConfiguration(force: false)
+    func callTool(functionName: String, arguments: [String: Any], reloadIfNeeded: Bool = true) async -> ToolExecutionResult {
+        if reloadIfNeeded {
+            await self.reloadConfiguration(force: false)
+        }
 
         guard let route = self.toolRoutes[functionName] else {
             return ToolExecutionResult(
@@ -222,6 +224,14 @@ final class MCPManager {
                 content: []
             )
         }
+    }
+
+    private func currentStatusSummary() -> StatusSummary {
+        return StatusSummary(
+            enabledServers: self.enabledServerIDs.count,
+            connectedServers: self.runtimes.count,
+            lastError: self.lastError
+        )
     }
 
     private func applyConfiguration(_ document: MCPSettingsStore.SettingsDocument) async {

@@ -5,7 +5,7 @@ import Foundation
 final class TerminalService {
     // MARK: - JSON Response Types
 
-    struct CommandResult: Codable {
+    struct CommandResult: Codable, Sendable {
         let success: Bool
         let command: String
         let output: String
@@ -67,6 +67,20 @@ final class TerminalService {
         workingDirectory: String? = nil,
         timeout: TimeInterval = 30
     ) async -> CommandResult {
+        return await Task.detached(priority: .utility) {
+            Self.executeOffMain(
+                command: command,
+                workingDirectory: workingDirectory,
+                timeout: timeout
+            )
+        }.value
+    }
+
+    private static func executeOffMain(
+        command: String,
+        workingDirectory: String?,
+        timeout: TimeInterval
+    ) -> CommandResult {
         let startTime = Date()
 
         let process = Process()
