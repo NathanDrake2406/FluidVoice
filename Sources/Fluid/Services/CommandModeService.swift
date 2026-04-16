@@ -32,6 +32,8 @@ final class CommandModeService: ObservableObject {
     // Streaming UI update throttling - adaptive rate based on content length
     private var lastUIUpdate: CFAbsoluteTime = 0
     private var lastThinkingUIUpdate: CFAbsoluteTime = 0
+    private var lastNotchStreamingUIUpdate: CFAbsoluteTime = 0
+    private let notchStreamingUpdateInterval: CFAbsoluteTime = 0.05
     private var streamingBuffer: [String] = [] // Buffer tokens instead of string concat
     private var thinkingBuffer: [String] = [] // Buffer thinking tokens
 
@@ -1191,6 +1193,7 @@ final class CommandModeService: ObservableObject {
         self.thinkingBuffer = []
         self.lastUIUpdate = CFAbsoluteTimeGetCurrent()
         self.lastThinkingUIUpdate = CFAbsoluteTimeGetCurrent()
+        self.lastNotchStreamingUIUpdate = CFAbsoluteTimeGetCurrent()
 
         // MCP bootstrap runs in the background. If it's not ready quickly, proceed with terminal-only tools.
         self.startMCPSessionBootstrapIfNeeded()
@@ -1248,7 +1251,10 @@ final class CommandModeService: ObservableObject {
                         self.streamingText = fullContent
 
                         // Push to notch for real-time display
-                        if self.enableNotchOutput {
+                        if self.enableNotchOutput,
+                           now - self.lastNotchStreamingUIUpdate >= self.notchStreamingUpdateInterval
+                        {
+                            self.lastNotchStreamingUIUpdate = now
                             NotchContentState.shared.updateCommandStreamingText(fullContent)
                         }
                     }

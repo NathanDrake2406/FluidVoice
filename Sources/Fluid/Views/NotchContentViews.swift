@@ -6,6 +6,7 @@
 //
 
 import Combine
+import MarkdownUI
 import SwiftUI
 
 // MARK: - Observable state for notch content (Singleton)
@@ -1141,15 +1142,7 @@ struct NotchCommandOutputExpandedView: View {
                     .textSelection(.enabled)
 
             case .assistant:
-                Text(message.content)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.white.opacity(0.08))
-                    .cornerRadius(8)
-                    .frame(maxWidth: 320, alignment: .leading)
-                    .textSelection(.enabled)
+                self.assistantMarkdownBubble(message.content, isStreaming: false)
                 Spacer()
 
             case .status:
@@ -1169,18 +1162,34 @@ struct NotchCommandOutputExpandedView: View {
 
     private var streamingMessageView: some View {
         HStack(alignment: .top) {
-            Text(self.contentState.commandStreamingText)
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.85))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.white.opacity(0.08))
-                .cornerRadius(8)
-                .frame(maxWidth: 320, alignment: .leading)
+            self.assistantMarkdownBubble(self.contentState.commandStreamingText, isStreaming: true)
                 .drawingGroup() // Flatten to bitmap for faster streaming updates
             // textSelection disabled during streaming for performance
             Spacer()
         }
+    }
+
+    @ViewBuilder
+    private func assistantMarkdownBubble(_ content: String, isStreaming: Bool) -> some View {
+        Group {
+            if isStreaming {
+                Markdown(content)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .tint(self.commandRed)
+            } else {
+                Markdown(content)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .tint(self.commandRed)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.white.opacity(0.08))
+        .cornerRadius(8)
+        .frame(maxWidth: 320, alignment: .leading)
     }
 
     private var processingIndicator: some View {
