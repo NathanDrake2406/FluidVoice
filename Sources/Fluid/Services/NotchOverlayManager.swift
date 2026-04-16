@@ -333,8 +333,10 @@ final class NotchOverlayManager {
 
     /// Show expanded command output notch
     func showExpandedCommandOutput() {
-        // Hide regular notch first if visible
-        if self.notch != nil {
+        // Hide any recording overlay first (regular notch or bottom overlay).
+        // Otherwise, expanded command output can race with deferred hide operations,
+        // leaving the bottom overlay visible underneath.
+        if self.notch != nil || self.isBottomOverlayVisible || self.state != .idle {
             self.hide()
         }
 
