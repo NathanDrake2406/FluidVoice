@@ -71,7 +71,7 @@ struct CommandModeView: View {
     // MARK: - Header
 
     private var headerView: some View {
-        HStack {
+        VStack(spacing: 10) {
             HStack(spacing: 8) {
                 Text("Command Mode")
                     .font(.title2)
@@ -85,25 +85,25 @@ struct CommandModeView: View {
                     .padding(.vertical, 2)
                     .background(Color(red: 1.0, green: 0.35, blue: 0.35)) // Command mode red
                     .cornerRadius(4)
+
+                Spacer()
             }
 
-            Spacer()
-
-            // Chat management buttons
-            HStack(spacing: 4) {
-                // New Chat Button
+            HStack(spacing: 8) {
                 Button(action: { self.service.createNewChat() }) {
-                    Image(systemName: "plus")
+                    self.headerControlChip {
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
                 }
-                .buttonStyle(.bordered)
-                .help("New chat")
+                .buttonStyle(.plain)
                 .disabled(self.service.isProcessing)
+                .help("Create new session")
 
-                // Recent Chats Menu
                 Menu {
                     let recentChats = self.service.getRecentChats()
                     if recentChats.isEmpty {
-                        Text("No recent chats")
+                        Text("No session history")
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(recentChats) { chat in
@@ -129,43 +129,76 @@ struct CommandModeView: View {
                         }
                     }
                 } label: {
-                    Image(systemName: "clock.arrow.circlepath")
+                    self.headerControlChip {
+                        HStack(spacing: 4) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.system(size: 12, weight: .semibold))
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                    }
                 }
-                .menuStyle(.borderlessButton)
-                .frame(width: 32, height: 24)
-                .help("Recent chats")
-
-                // Delete Chat Button - deletes the current chat entirely
-                Button(action: { self.showingClearConfirmation = true }) {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.bordered)
-                .help("Delete chat")
+                .menuIndicator(.hidden)
+                .buttonStyle(.plain)
                 .disabled(self.service.isProcessing)
-            }
+                .help("Browse session history")
 
-            Divider()
-                .frame(height: 20)
-                .padding(.horizontal, 8)
-
-            // Confirm Before Execute Toggle
-            Toggle(isOn: self.$settings.commandModeConfirmBeforeExecute) {
-                Label("Confirm", systemImage: "checkmark.shield")
+                Text(self.currentSessionTitle)
                     .font(.caption)
-            }
-            .toggleStyle(.checkbox)
-            .help("Ask for confirmation before running commands")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 180, alignment: .leading)
 
-            Divider()
-                .frame(height: 20)
-                .padding(.horizontal, 4)
-
-            HStack(spacing: 6) {
-                Text(self.mcpStatusText)
-                    .font(.caption)
-                    .foregroundStyle(self.mcpStatusColor)
+                Spacer(minLength: 8)
 
                 Menu {
+                    Button {
+                        self.settings.commandModeConfirmBeforeExecute = false
+                    } label: {
+                        Label("Auto-approve tools", systemImage: "checkmark.shield")
+                    }
+
+                    Button {
+                        self.settings.commandModeConfirmBeforeExecute = true
+                    } label: {
+                        Label("Require confirmation", systemImage: "shield")
+                    }
+                } label: {
+                    self.headerControlChip {
+                        HStack(spacing: 6) {
+                            Image(systemName: self.approvalModeIcon)
+                                .font(.system(size: 12, weight: .semibold))
+                            Text(self.approvalModeText)
+                                .font(.caption)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                        .foregroundStyle(self.approvalModeColor)
+                    }
+                }
+                .menuIndicator(.hidden)
+                .buttonStyle(.plain)
+                .help("Tool approval mode")
+
+                if self.service.pendingCommand != nil {
+                    Button(action: {
+                        Task { await self.service.confirmAndExecute() }
+                    }) {
+                        self.headerControlChip {
+                            Label("Confirm", systemImage: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Confirm and run pending command")
+                }
+
+                Menu {
+                    Text(self.mcpStatusText)
+                        .font(.caption)
+
                     Button("Open settings.json") {
                         self.openMCPSettingsFile()
                     }
@@ -176,18 +209,58 @@ struct CommandModeView: View {
                         self.reloadMCPConfiguration()
                     }
                     .disabled(self.isReloadingMCP)
+
+                    if let lastError = self.service.mcpLastError, !lastError.isEmpty {
+                        Divider()
+                        Text("Last error: \(lastError)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 14, weight: .medium))
+                    self.headerControlChip {
+                        HStack(spacing: 6) {
+                            Image(systemName: "server.rack")
+                                .font(.system(size: 12, weight: .semibold))
+                            Circle()
+                                .fill(self.mcpStatusColor)
+                                .frame(width: 7, height: 7)
+                            Text(self.mcpStatusText)
+                                .font(.caption)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                        .foregroundStyle(self.mcpStatusColor)
+                    }
                 }
-                .menuStyle(.borderlessButton)
-                .help("MCP tools settings")
+                .menuIndicator(.hidden)
+                .buttonStyle(.plain)
+                .help("MCP status and settings")
+
+                Menu {
+                    Button(role: .destructive) {
+                        self.showingClearConfirmation = true
+                    } label: {
+                        Label("Delete current session", systemImage: "trash")
+                    }
+                    .disabled(self.service.isProcessing)
+                } label: {
+                    self.headerControlChip {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .menuIndicator(.hidden)
+                .buttonStyle(.plain)
+                .help("Session actions")
             }
         }
-        .padding()
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .background(self.theme.palette.windowBackground)
         .confirmationDialog(
-            "Delete this chat?",
+            "Delete this session?",
             isPresented: self.$showingClearConfirmation,
             titleVisibility: .visible
         ) {
@@ -196,6 +269,39 @@ struct CommandModeView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    private var currentSessionTitle: String {
+        self.service.getRecentChats()
+            .first(where: { $0.id == self.service.currentChatID })?
+            .title ?? "New Session"
+    }
+
+    private var approvalModeText: String {
+        self.settings.commandModeConfirmBeforeExecute ? "Manual approval" : "Auto-approve"
+    }
+
+    private var approvalModeIcon: String {
+        self.settings.commandModeConfirmBeforeExecute ? "shield" : "checkmark.shield"
+    }
+
+    private var approvalModeColor: Color {
+        self.settings.commandModeConfirmBeforeExecute ? .orange : Color.fluidGreen
+    }
+
+    private func headerControlChip<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(self.theme.palette.cardBackground.opacity(0.9))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(self.theme.palette.cardBorder.opacity(0.55), lineWidth: 1)
+            )
     }
 
     // MARK: - How To Section
@@ -649,6 +755,10 @@ struct CommandModeView: View {
     }
 
     private var mcpStatusText: String {
+        if self.isReloadingMCP {
+            return "MCP reloading..."
+        }
+
         if self.service.isMCPBootstrapInProgress {
             return "MCP loading..."
         }
@@ -659,10 +769,23 @@ struct CommandModeView: View {
     }
 
     private var mcpStatusColor: Color {
-        if self.service.isMCPBootstrapInProgress {
+        if self.isReloadingMCP || self.service.isMCPBootstrapInProgress {
             return .secondary
         }
-        return self.service.mcpConnectedServerCount > 0 ? Color.fluidGreen : .secondary
+
+        let connected = self.service.mcpConnectedServerCount
+        let enabled = self.service.mcpEnabledServerCount
+
+        if enabled == 0 {
+            return .secondary
+        }
+        if connected == enabled {
+            return Color.fluidGreen
+        }
+        if connected > 0 {
+            return .orange
+        }
+        return .red
     }
 
     private func openMCPSettingsFile() {
