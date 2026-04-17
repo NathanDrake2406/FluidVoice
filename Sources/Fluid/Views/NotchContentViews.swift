@@ -47,6 +47,35 @@ class NotchContentState: ObservableObject {
     @Published var commandInputText: String = "" // User's follow-up input
     @Published var commandConversationHistory: [CommandOutputMessage] = []
     @Published var isCommandProcessing: Bool = false
+    @Published var commandTurnBadgeState: CommandTurnBadgeState = .hidden
+
+    enum CommandTurnBadgeState: Equatable {
+        case hidden
+        case success
+        case failure
+
+        var symbolName: String {
+            switch self {
+            case .hidden:
+                return ""
+            case .success:
+                return "checkmark.circle.fill"
+            case .failure:
+                return "xmark.circle.fill"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .hidden:
+                return .clear
+            case .success:
+                return Color.fluidGreen
+            case .failure:
+                return Color(red: 1.0, green: 0.35, blue: 0.35)
+            }
+        }
+    }
 
     // MARK: - Chat History State
 
@@ -188,6 +217,16 @@ class NotchContentState: ObservableObject {
         self.isCommandProcessing = processing
     }
 
+    func setCommandTurnBadge(success: Bool) {
+        self.commandTurnBadgeState = success ? .success : .failure
+    }
+
+    func clearCommandTurnBadge() {
+        if self.commandTurnBadgeState != .hidden {
+            self.commandTurnBadgeState = .hidden
+        }
+    }
+
     /// Clear command output and hide expanded view
     func clearCommandOutput() {
         self.isExpandedForCommandOutput = false
@@ -196,6 +235,7 @@ class NotchContentState: ObservableObject {
         self.commandInputText = ""
         self.commandConversationHistory.removeAll()
         self.isCommandProcessing = false
+        self.clearCommandTurnBadge()
     }
 
     /// Hide expanded view but keep history
@@ -632,7 +672,7 @@ struct NotchExpandedView: View {
         .background(Color.black) // Must be pure black to blend with macOS notch
         .contentShape(Rectangle()) // Make entire area tappable
         .onTapGesture {
-            // If in command mode with history, clicking expands the conversation
+            // If in command mode with history, clicking opens Command Mode in-app.
             if self.canExpandCommandHistory {
                 NotchOverlayManager.shared.onNotchClicked?()
             }
@@ -768,14 +808,31 @@ struct NotchCompactLeadingView: View {
     @ObservedObject private var contentState = NotchContentState.shared
     @State private var isPulsing = false
 
+    private var isShowingCommandTurnBadge: Bool {
+        self.contentState.commandTurnBadgeState != .hidden
+    }
+
     var body: some View {
-        Image(systemName: "waveform")
-            .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(self.contentState.mode.notchColor)
-            .scaleEffect(self.isPulsing ? 1.1 : 1.0)
-            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: self.isPulsing)
-            .onAppear { self.isPulsing = true }
-            .onDisappear { self.isPulsing = false }
+        Group {
+            if self.isShowingCommandTurnBadge {
+                Image(systemName: self.contentState.commandTurnBadgeState.symbolName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(self.contentState.commandTurnBadgeState.color)
+                    .shadow(color: self.contentState.commandTurnBadgeState.color.opacity(0.35), radius: 4, x: 0, y: 0)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        NotchOverlayManager.shared.onNotchClicked?()
+                    }
+            } else {
+                Image(systemName: "waveform")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(self.contentState.mode.notchColor)
+                    .scaleEffect(self.isPulsing ? 1.1 : 1.0)
+                    .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: self.isPulsing)
+                    .onAppear { self.isPulsing = true }
+                    .onDisappear { self.isPulsing = false }
+            }
+        }
     }
 }
 
@@ -783,15 +840,32 @@ struct NotchCompactTrailingView: View {
     @ObservedObject private var contentState = NotchContentState.shared
     @State private var isPulsing = false
 
+    private var isShowingCommandTurnBadge: Bool {
+        self.contentState.commandTurnBadgeState != .hidden
+    }
+
     var body: some View {
-        Circle()
-            .fill(self.contentState.mode.notchColor)
-            .frame(width: 5, height: 5)
-            .opacity(self.isPulsing ? 0.5 : 1.0)
-            .scaleEffect(self.isPulsing ? 0.85 : 1.0)
-            .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: self.isPulsing)
-            .onAppear { self.isPulsing = true }
-            .onDisappear { self.isPulsing = false }
+        Group {
+            if self.isShowingCommandTurnBadge {
+                Circle()
+                    .fill(self.contentState.commandTurnBadgeState.color)
+                    .frame(width: 6, height: 6)
+                    .shadow(color: self.contentState.commandTurnBadgeState.color.opacity(0.35), radius: 3, x: 0, y: 0)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        NotchOverlayManager.shared.onNotchClicked?()
+                    }
+            } else {
+                Circle()
+                    .fill(self.contentState.mode.notchColor)
+                    .frame(width: 5, height: 5)
+                    .opacity(self.isPulsing ? 0.5 : 1.0)
+                    .scaleEffect(self.isPulsing ? 0.85 : 1.0)
+                    .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: self.isPulsing)
+                    .onAppear { self.isPulsing = true }
+                    .onDisappear { self.isPulsing = false }
+            }
+        }
     }
 }
 

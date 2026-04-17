@@ -514,6 +514,7 @@ final class CommandModeService: ObservableObject {
 
         // Push to notch
         if self.enableNotchOutput {
+            NotchContentState.shared.clearCommandTurnBadge()
             NotchContentState.shared.addCommandMessage(role: .user, content: text)
             NotchContentState.shared.setCommandProcessing(true)
         }
@@ -534,6 +535,7 @@ final class CommandModeService: ObservableObject {
 
         self.isProcessing = true
         self.didRequireConfirmationThisRun = false
+        NotchContentState.shared.clearCommandTurnBadge()
         NotchContentState.shared.setCommandProcessing(true)
 
         await self.processNextTurn()
@@ -583,7 +585,7 @@ final class CommandModeService: ObservableObject {
             if self.enableNotchOutput {
                 NotchContentState.shared.addCommandMessage(role: .assistant, content: errorMsg)
                 NotchContentState.shared.setCommandProcessing(false)
-                self.showExpandedNotchIfNeeded()
+                self.showCompletionBadgeIfNeeded(success: false)
             }
             return
         }
@@ -679,12 +681,8 @@ final class CommandModeService: ObservableObject {
             case .textOnly, .empty:
                 let finalContent = response.normalizedContent.isEmpty ? "I couldn't understand that." : response.normalizedContent
 
-                // Just a text response - check if it's a final summary
-                let lowered = finalContent.lowercased()
-                let isFinal = lowered.contains("complete") ||
-                    lowered.contains("done") ||
-                    lowered.contains("success") ||
-                    lowered.contains("finished")
+                // Just a text response - infer whether this is a successful completion summary.
+                let isFinal = self.isSuccessfulCompletionSummary(finalContent)
 
                 self.conversationHistory.append(Message(
                     role: .assistant,
@@ -701,12 +699,12 @@ final class CommandModeService: ObservableObject {
 
                 self.captureCommandRunCompleted(success: isFinal)
 
-                // Push final response to notch and show expanded view
+                // Push final response to notch and show compact completion badge
                 if self.enableNotchOutput {
                     NotchContentState.shared.updateCommandStreamingText("") // Clear streaming
                     NotchContentState.shared.addCommandMessage(role: .assistant, content: finalContent)
                     NotchContentState.shared.setCommandProcessing(false)
-                    self.showExpandedNotchIfNeeded()
+                    self.showCompletionBadgeIfNeeded(success: isFinal)
                 }
             }
 
@@ -729,7 +727,7 @@ final class CommandModeService: ObservableObject {
             if self.enableNotchOutput {
                 NotchContentState.shared.addCommandMessage(role: .assistant, content: errorMsg)
                 NotchContentState.shared.setCommandProcessing(false)
-                self.showExpandedNotchIfNeeded()
+                self.showCompletionBadgeIfNeeded(success: false)
             }
         }
     }
@@ -766,13 +764,60 @@ final class CommandModeService: ObservableObject {
         )
     }
 
-    /// Show expanded notch output if there's content to display
-    private func showExpandedNotchIfNeeded() {
+    /// Show compact completion badge in the notch if there's content to display
+    private func showCompletionBadgeIfNeeded(success: Bool) {
+        guard success else { return }
         guard self.enableNotchOutput else { return }
         guard !NotchContentState.shared.commandConversationHistory.isEmpty else { return }
 
-        // Show the expanded notch
-        NotchOverlayManager.shared.showExpandedCommandOutput()
+        NotchOverlayManager.shared.showCommandCompletionBadge(success: success)
+    }
+
+    private func isSuccessfulCompletionSummary(_ summary: String) -> Bool {
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        if trimmed.contains("✗") {
+            return false
+        }
+        if trimmed.contains("✓") || trimmed.contains("✔") {
+            return true
+        }
+
+        let lowered = trimmed.lowercased()
+        let failureKeywords = [
+            "failed", "failure", "error", "unable", "cannot", "can't", "could not", "couldn't", "not possible", "did not", "didn't",
+        ]
+        if failureKeywords.contains(where: { lowered.contains($0) }) {
+            return false
+        }
+
+        let successKeywords = [
+            "complete", "completed", "done", "success", "successful", "finished",
+        ]
+        if successKeywords.contains(where: { lowered.contains($0) }) {
+            return true
+        }
+
+        // If the model gave a neutral summary, fall back to tool outcomes for this run.
+        let toolResults = self.currentRunToolResultMessages()
+        if toolResults.contains(where: { $0.stepType == .failure }) {
+            return false
+        }
+        if toolResults.contains(where: { $0.stepType == .success }) {
+            return true
+        }
+
+        return false
+    }
+
+    private func currentRunToolResultMessages() -> [Message] {
+        guard let lastUserIndex = self.conversationHistory.lastIndex(where: { $0.role == .user }) else {
+            return []
+        }
+
+        let messagesAfterUser = self.conversationHistory.suffix(from: self.conversationHistory.index(after: lastUserIndex))
+        return messagesAfterUser.filter { $0.role == .tool }
     }
 
     private func determineStepType(for command: String, purpose: String?) -> Message.StepType {

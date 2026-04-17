@@ -74,6 +74,10 @@ final class NotchOverlayManager {
     /// Track pending retry task for cancellation
     private var pendingRetryTask: Task<Void, Never>?
 
+    /// Short-lived compact completion indicator (command mode)
+    private var commandCompletionBadgeTask: Task<Void, Never>?
+    private(set) var isCommandCompletionBadgeVisible: Bool = false
+
     // Cancel shortcut monitors for dismissing notch / overlay
     private var globalEscapeMonitor: Any?
     private var localEscapeMonitor: Any?
@@ -119,6 +123,9 @@ final class NotchOverlayManager {
             self.lastAudioPublisher = audioLevelPublisher
             return
         }
+
+        // Any fresh recording/overlay session should clear the command completion badge.
+        self.clearCommandCompletionBadgeState()
 
         // Cancel any pending retry operations
         self.pendingRetryTask?.cancel()
@@ -186,7 +193,11 @@ final class NotchOverlayManager {
     }
 
     /// Show notch overlay (original behavior)
-    private func showNotchOverlay(audioLevelPublisher: AnyPublisher<CGFloat, Never>, mode: OverlayMode) {
+    private func showNotchOverlay(
+        audioLevelPublisher: AnyPublisher<CGFloat, Never>,
+        mode: OverlayMode,
+        initiallyCompact: Bool = false
+    ) {
         // Hide bottom overlay if it was visible
         if self.isBottomOverlayVisible {
             BottomOverlayWindowController.shared.hide()
@@ -217,20 +228,35 @@ final class NotchOverlayManager {
             NotchCompactTrailingView()
         }
 
+        newNotch.transitionConfiguration = DynamicNotchTransitionConfiguration(skipIntermediateHides: true)
+
         self.notch = newNotch
 
         // Show in expanded state
         Task { [weak self] in
-            await newNotch.expand()
+            if initiallyCompact {
+                await newNotch.compact()
+            } else {
+                await newNotch.expand()
+            }
+
             // Only update state if we're still the active generation
             guard let self = self, self.generation == currentGeneration else { return }
-            self.state = .visible
+
+            if newNotch.windowController?.window != nil {
+                self.state = .visible
+            } else {
+                self.notch = nil
+                self.state = .idle
+            }
         }
     }
 
     func hide() {
         // Stop monitoring active app changes
         ActiveAppMonitor.shared.stopMonitoring()
+
+        self.clearCommandCompletionBadgeState()
 
         // Hide bottom overlay if visible
         if self.isBottomOverlayVisible {
@@ -273,6 +299,8 @@ final class NotchOverlayManager {
         self.pendingRetryTask?.cancel()
         self.pendingRetryTask = nil
 
+        self.clearCommandCompletionBadgeState()
+
         if let existingNotch = notch {
             await existingNotch.hide()
         }
@@ -308,6 +336,10 @@ final class NotchOverlayManager {
     func setProcessing(_ processing: Bool) {
         NotchContentState.shared.setProcessing(processing)
 
+        if processing {
+            self.clearCommandCompletionBadgeState()
+        }
+
         // If expanded command output is showing, don't mess with regular notch
         if self.isCommandOutputExpanded {
             return
@@ -331,8 +363,81 @@ final class NotchOverlayManager {
 
     // MARK: - Expanded Command Output
 
+    func showCommandCompletionBadge(success: Bool) {
+        guard !self.isCommandOutputExpanded else { return }
+
+        self.pendingRetryTask?.cancel()
+        self.pendingRetryTask = nil
+
+        self.commandCompletionBadgeTask?.cancel()
+        self.commandCompletionBadgeTask = nil
+
+        if self.isBottomOverlayVisible {
+            BottomOverlayWindowController.shared.hide()
+            self.isBottomOverlayVisible = false
+        }
+
+        self.currentMode = .command
+        NotchContentState.shared.mode = .command
+        NotchContentState.shared.setCommandTurnBadge(success: success)
+        self.isCommandCompletionBadgeVisible = true
+
+        let badgePublisher = self.lastAudioPublisher ?? Empty<CGFloat, Never>().eraseToAnyPublisher()
+
+        let shouldStartCompactFromHidden = self.notch == nil || self.state == .idle
+
+        if shouldStartCompactFromHidden {
+            self.showNotchOverlay(
+                audioLevelPublisher: badgePublisher,
+                mode: .command,
+                initiallyCompact: true
+            )
+        }
+
+        let holdDurationNs: UInt64 = success ? 2_400_000_000 : 2_000_000_000
+
+        self.commandCompletionBadgeTask = Task { [weak self] in
+            guard let self else { return }
+
+            if !shouldStartCompactFromHidden {
+                // Give the expanded notch a brief moment to settle before compacting.
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled else { return }
+
+                if let currentNotch = self.notch {
+                    await currentNotch.compact()
+                    guard !Task.isCancelled else { return }
+
+                    if currentNotch.windowController?.window != nil {
+                        self.state = .visible
+                    } else {
+                        self.notch = nil
+                        self.state = .idle
+                    }
+                }
+            }
+
+            try? await Task.sleep(nanoseconds: holdDurationNs)
+            guard !Task.isCancelled else { return }
+
+            self.clearCommandCompletionBadgeState(cancelTask: false)
+            self.hide()
+        }
+    }
+
+    private func clearCommandCompletionBadgeState(cancelTask: Bool = true) {
+        if cancelTask {
+            self.commandCompletionBadgeTask?.cancel()
+            self.commandCompletionBadgeTask = nil
+        }
+        self.isCommandCompletionBadgeVisible = false
+        NotchContentState.shared.clearCommandTurnBadge()
+    }
+
     /// Show expanded command output notch
     func showExpandedCommandOutput() {
+        self.clearCommandCompletionBadgeState()
+
         // Hide any recording overlay first (regular notch or bottom overlay).
         // Otherwise, expanded command output can race with deferred hide operations,
         // leaving the bottom overlay visible underneath.

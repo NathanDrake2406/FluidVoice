@@ -294,11 +294,11 @@ struct ContentView: View {
                 DebugLogger.shared.info("✅ Audio subsystems initialized", source: "ContentView")
             }
 
-            // Set up notch click callback for expanding command conversation
+            // Set up notch click callback for navigating to in-app Command Mode
             NotchOverlayManager.shared.onNotchClicked = {
-                // When notch is clicked in command mode, show expanded conversation
                 if !NotchContentState.shared.commandConversationHistory.isEmpty {
-                    NotchOverlayManager.shared.showExpandedCommandOutput()
+                    NotchOverlayManager.shared.hide()
+                    self.menuBarManager.openCommandModeFromUI()
                 }
             }
 
@@ -777,6 +777,8 @@ struct ContentView: View {
         switch destination {
         case .preferences:
             self.selectedSidebarItem = .preferences
+        case .commandMode:
+            self.selectedSidebarItem = .commandMode
         }
     }
 

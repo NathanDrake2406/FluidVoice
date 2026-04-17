@@ -5,6 +5,7 @@ import SwiftUI
 
 enum MenuBarNavigationDestination: String {
     case preferences
+    case commandMode
 }
 
 @MainActor
@@ -176,11 +177,23 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
                 return
             }
 
+            // Keep compact command completion badge visible for its short acknowledgment duration.
+            if NotchOverlayManager.shared.isCommandCompletionBadgeVisible {
+                self.pendingHideOperation = nil
+                return
+            }
+
             let hideItem = DispatchWorkItem { [weak self] in
                 guard let self = self, !self.overlayVisible else { return }
 
                 // Don't hide if expanded command output is now showing
                 if NotchOverlayManager.shared.isCommandOutputExpanded {
+                    self.pendingHideOperation = nil
+                    return
+                }
+
+                // Don't hide while command completion badge is active.
+                if NotchOverlayManager.shared.isCommandCompletionBadgeVisible {
                     self.pendingHideOperation = nil
                     return
                 }
@@ -226,11 +239,23 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
                 return
             }
 
+            // If command completion badge is showing, let it auto-hide itself.
+            if NotchOverlayManager.shared.isCommandCompletionBadgeVisible {
+                self.pendingHideOperation = nil
+                NotchOverlayManager.shared.setProcessing(processing)
+                return
+            }
+
             let hideItem = DispatchWorkItem { [weak self] in
                 guard let self = self, !self.overlayVisible else { return }
 
                 // Don't hide if expanded command output is now showing
                 if NotchOverlayManager.shared.isCommandOutputExpanded {
+                    self.pendingHideOperation = nil
+                    return
+                }
+
+                if NotchOverlayManager.shared.isCommandCompletionBadgeVisible {
                     self.pendingHideOperation = nil
                     return
                 }
@@ -660,9 +685,26 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         }
     }
 
+    @objc private func openCommandMode() {
+        self.requestedNavigationDestination = nil
+        self.requestedNavigationDestination = .commandMode
+
+        self.openMainWindow()
+
+        DispatchQueue.main.async { [weak self] in
+            self?.requestedNavigationDestination = nil
+            self?.requestedNavigationDestination = .commandMode
+        }
+    }
+
     /// Public entry-point for non-menu UI surfaces (e.g. overlay controls) to open Preferences.
     func openPreferencesFromUI() {
         self.openPreferences()
+    }
+
+    /// Public entry-point for notch interactions to open Command Mode.
+    func openCommandModeFromUI() {
+        self.openCommandMode()
     }
 
     /// Create and present a fresh main window hosting `ContentView`
