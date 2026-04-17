@@ -369,8 +369,13 @@ final class NotchOverlayManager {
         self.pendingRetryTask?.cancel()
         self.pendingRetryTask = nil
 
-        self.commandCompletionBadgeTask?.cancel()
-        self.commandCompletionBadgeTask = nil
+        // Reset any existing badge state before deciding this completion's feedback mode.
+        self.clearCommandCompletionBadgeState()
+
+        if success, self.shouldShowSystemSuccessNotification() {
+            SystemNotificationService.shared.showCommandSuccessNotification()
+            return
+        }
 
         if self.isBottomOverlayVisible {
             BottomOverlayWindowController.shared.hide()
@@ -432,6 +437,28 @@ final class NotchOverlayManager {
         }
         self.isCommandCompletionBadgeVisible = false
         NotchContentState.shared.clearCommandTurnBadge()
+    }
+
+    private func shouldShowSystemSuccessNotification() -> Bool {
+        guard let activeScreen = self.activeScreenForCompletionFeedback() else { return false }
+        return !self.screenHasHardwareNotch(activeScreen)
+    }
+
+    private func activeScreenForCompletionFeedback() -> NSScreen? {
+        if let notchScreen = self.notch?.windowController?.window?.screen {
+            return notchScreen
+        }
+
+        let mouseLocation = NSEvent.mouseLocation
+        if let mouseScreen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) }) {
+            return mouseScreen
+        }
+
+        return NSScreen.main ?? NSScreen.screens.first
+    }
+
+    private func screenHasHardwareNotch(_ screen: NSScreen) -> Bool {
+        screen.auxiliaryTopLeftArea?.width != nil && screen.auxiliaryTopRightArea?.width != nil
     }
 
     /// Show expanded command output notch
