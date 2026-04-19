@@ -1657,6 +1657,7 @@ struct ContentView: View {
         // Thinking tokens are extracted but not displayed (no onThinkingChunk)
         let config = LLMClient.Config(
             messages: messages,
+            providerID: currentSelectedProviderID,
             model: derivedSelectedModel,
             baseURL: derivedBaseURL,
             apiKey: apiKey,

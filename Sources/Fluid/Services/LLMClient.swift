@@ -45,6 +45,7 @@ final class LLMClient {
     private enum APIFormat {
         case chatCompletions
         case responses
+        case anthropicMessages
     }
 
     private init() {
@@ -52,6 +53,10 @@ final class LLMClient {
         config.timeoutIntervalForRequest = Self.defaultTimeoutSeconds
         config.timeoutIntervalForResource = Self.defaultTimeoutSeconds * 2 // Allow extra time for resource loading
         self.session = URLSession(configuration: config)
+    }
+
+    init(session: URLSession) {
+        self.session = session
     }
 
     // MARK: - Response Types
@@ -86,6 +91,7 @@ final class LLMClient {
 
     struct Config {
         let messages: [[String: Any]]
+        let providerID: String?
         let model: String
         let baseURL: String
         let apiKey: String
@@ -116,6 +122,7 @@ final class LLMClient {
 
         init(
             messages: [[String: Any]],
+            providerID: String? = nil,
             model: String,
             baseURL: String,
             apiKey: String,
@@ -126,6 +133,7 @@ final class LLMClient {
             extraParameters: [String: Any] = [:]
         ) {
             self.messages = messages
+            self.providerID = providerID
             self.model = model
             self.baseURL = baseURL
             self.apiKey = apiKey
@@ -137,13 +145,139 @@ final class LLMClient {
         }
     }
 
+    // MARK: - Routing Abstractions
+
+    private enum ProviderFamily {
+        case anthropic
+        case openAICompatible
+    }
+
+    private struct RoutePlan {
+        let primaryFormat: APIFormat
+        let fallbackFormat: APIFormat?
+    }
+
+    private protocol APIRouteStrategy {
+        var format: APIFormat { get }
+        func endpoint(for baseURL: String) -> String
+        func applyHeaders(apiKey: String, request: inout URLRequest)
+    }
+
+    private struct AnthropicMessagesRouteStrategy: APIRouteStrategy {
+        let format: APIFormat = .anthropicMessages
+
+        func endpoint(for baseURL: String) -> String {
+            if baseURL.contains("/messages") {
+                return baseURL
+            }
+
+            let base = baseURL.isEmpty ? ModelRepository.shared.defaultBaseURL(for: "anthropic") : baseURL
+            return "\(base)/messages"
+        }
+
+        func applyHeaders(apiKey: String, request: inout URLRequest) {
+            if !apiKey.isEmpty {
+                request.addValue(apiKey, forHTTPHeaderField: "x-api-key")
+            }
+            request.addValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        }
+    }
+
+    private struct ResponsesRouteStrategy: APIRouteStrategy {
+        let format: APIFormat = .responses
+
+        func endpoint(for baseURL: String) -> String {
+            if baseURL.contains("/responses") {
+                return baseURL
+            }
+
+            if baseURL.contains("/chat/completions") {
+                return baseURL.replacingOccurrences(of: "/chat/completions", with: "/responses")
+            }
+
+            if baseURL.contains("/api/chat") || baseURL.contains("/api/generate") {
+                // Some OpenAI-compatible providers only expose chat-style paths.
+                // We still attempt Responses schema first and rely on fallback to chat completions.
+                return baseURL
+            }
+
+            let base = baseURL.isEmpty ? ModelRepository.shared.defaultBaseURL(for: "openai") : baseURL
+            return "\(base)/responses"
+        }
+
+        func applyHeaders(apiKey: String, request: inout URLRequest) {
+            if !apiKey.isEmpty {
+                request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+        }
+    }
+
+    private struct ChatCompletionsRouteStrategy: APIRouteStrategy {
+        let format: APIFormat = .chatCompletions
+
+        func endpoint(for baseURL: String) -> String {
+            if baseURL.contains("/chat/completions") || baseURL.contains("/api/chat") || baseURL.contains("/api/generate") {
+                return baseURL
+            }
+
+            if baseURL.contains("/responses") {
+                return baseURL.replacingOccurrences(of: "/responses", with: "/chat/completions")
+            }
+
+            let base = baseURL.isEmpty ? ModelRepository.shared.defaultBaseURL(for: "openai") : baseURL
+            return "\(base)/chat/completions"
+        }
+
+        func applyHeaders(apiKey: String, request: inout URLRequest) {
+            if !apiKey.isEmpty {
+                request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+        }
+    }
+
+    private func providerFamily(for config: Config) -> ProviderFamily {
+        if let providerID = config.providerID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           providerID == "anthropic"
+        {
+            return .anthropic
+        }
+
+        let baseURL = config.baseURL.lowercased()
+        if baseURL.contains("anthropic.com") {
+            return .anthropic
+        }
+
+        return .openAICompatible
+    }
+
+    private func routePlan(for config: Config) -> RoutePlan {
+        switch self.providerFamily(for: config) {
+        case .anthropic:
+            return RoutePlan(primaryFormat: .anthropicMessages, fallbackFormat: nil)
+        case .openAICompatible:
+            return RoutePlan(primaryFormat: .responses, fallbackFormat: .chatCompletions)
+        }
+    }
+
+    private func routeStrategy(for format: APIFormat) -> any APIRouteStrategy {
+        switch format {
+        case .anthropicMessages:
+            return AnthropicMessagesRouteStrategy()
+        case .responses:
+            return ResponsesRouteStrategy()
+        case .chatCompletions:
+            return ChatCompletionsRouteStrategy()
+        }
+    }
+
     // MARK: - Main Entry Point
 
     /// Make an LLM API call with the given configuration.
     /// Supports both streaming and non-streaming modes.
     /// Handles thinking token extraction, tool call parsing, and retries.
     func call(_ config: Config) async throws -> Response {
-        var request = try buildRequest(config)
+        let routePlan = self.routePlan(for: config)
+        var request = try buildRequest(config, forcedFormat: routePlan.primaryFormat)
 
         // Apply timeout to the request itself
         let timeout = config.timeoutSeconds ?? Self.defaultTimeoutSeconds
@@ -155,11 +289,11 @@ final class LLMClient {
         // than racing a separate "timeout task". A task-group timeout wrapper can accidentally
         // keep the caller suspended until the full timeout elapses, which is the exact stall
         // we want to eliminate for overlay responsiveness.
-        return try await self.executeWithRetry(request: request, config: config)
+        return try await self.executeWithRetry(request: request, config: config, routePlan: routePlan)
     }
 
     /// Execute request with retry logic (extracted for timeout wrapper)
-    private func executeWithRetry(request: URLRequest, config: Config) async throws -> Response {
+    private func executeWithRetry(request: URLRequest, config: Config, routePlan: RoutePlan) async throws -> Response {
         var currentRequest = request
         var attemptedResponsesFallback = false
         var lastError: Error?
@@ -172,14 +306,18 @@ final class LLMClient {
                     return try await self.processNonStreaming(request: currentRequest)
                 }
             } catch LLMError.httpError(let code, let message)
-                where !attemptedResponsesFallback && self.isResponsesRequest(currentRequest) && self.shouldFallbackToChat(statusCode: code, message: message)
+                where !attemptedResponsesFallback &&
+                self.isResponsesRequest(currentRequest) &&
+                routePlan.fallbackFormat != nil &&
+                self.shouldFallbackToChat(statusCode: code, message: message)
             {
                 attemptedResponsesFallback = true
                 DebugLogger.shared.warning(
                     "LLMClient: Responses endpoint rejected request (HTTP \(code)); falling back to chat completions",
                     source: "LLMClient"
                 )
-                currentRequest = try self.buildRequest(config, forcedFormat: .chatCompletions)
+                guard let fallbackFormat = routePlan.fallbackFormat else { continue }
+                currentRequest = try self.buildRequest(config, forcedFormat: fallbackFormat)
                 continue
             } catch let error as URLError where self.isRetryableError(error) {
                 lastError = error
@@ -203,9 +341,11 @@ final class LLMClient {
     // MARK: - Request Building
 
     private func buildRequest(_ config: Config, forcedFormat: APIFormat? = nil) throws -> URLRequest {
-        // Build endpoint URL
         let baseURL = config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let (endpoint, apiFormat) = self.resolveEndpoint(baseURL: baseURL, forcedFormat: forcedFormat)
+        let plan = self.routePlan(for: config)
+        let apiFormat = forcedFormat ?? plan.primaryFormat
+        let strategy = self.routeStrategy(for: apiFormat)
+        let endpoint = strategy.endpoint(for: baseURL)
 
         guard let url = URL(string: endpoint) else {
             throw LLMError.invalidURL
@@ -218,6 +358,8 @@ final class LLMClient {
             body = self.buildChatCompletionsBody(config)
         case .responses:
             body = self.buildResponsesBody(config)
+        case .anthropicMessages:
+            body = self.buildAnthropicMessagesBody(config)
         }
 
         // Serialize to JSON
@@ -237,47 +379,11 @@ final class LLMClient {
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        // Send Authorization whenever a key exists; some localhost endpoints still require auth.
-        if !config.apiKey.isEmpty {
-            request.addValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        }
+        strategy.applyHeaders(apiKey: config.apiKey, request: &request)
 
         request.httpBody = jsonData
 
         return request
-    }
-
-    private func resolveEndpoint(baseURL: String, forcedFormat: APIFormat?) -> (String, APIFormat) {
-        if let forcedFormat {
-            switch forcedFormat {
-            case .chatCompletions:
-                if baseURL.contains("/chat/completions") || baseURL.contains("/api/chat") || baseURL.contains("/api/generate") {
-                    return (baseURL, .chatCompletions)
-                }
-                let base = baseURL.isEmpty ? ModelRepository.shared.defaultBaseURL(for: "openai") : baseURL
-                return ("\(base)/chat/completions", .chatCompletions)
-            case .responses:
-                if baseURL.contains("/responses") {
-                    return (baseURL, .responses)
-                }
-                let base = baseURL.isEmpty ? ModelRepository.shared.defaultBaseURL(for: "openai") : baseURL
-                return ("\(base)/responses", .responses)
-            }
-        }
-
-        if baseURL.contains("/chat/completions") ||
-            baseURL.contains("/api/chat") ||
-            baseURL.contains("/api/generate")
-        {
-            return (baseURL, .chatCompletions)
-        }
-
-        if baseURL.contains("/responses") {
-            return (baseURL, .responses)
-        }
-
-        let base = baseURL.isEmpty ? ModelRepository.shared.defaultBaseURL(for: "openai") : baseURL
-        return ("\(base)/responses", .responses)
     }
 
     private func buildChatCompletionsBody(_ config: Config) -> [String: Any] {
@@ -358,6 +464,162 @@ final class LLMClient {
         }
 
         return body
+    }
+
+    private func buildAnthropicMessagesBody(_ config: Config) -> [String: Any] {
+        let (system, messages) = self.convertMessagesToAnthropicInput(config.messages)
+
+        var body: [String: Any] = [
+            "model": config.model,
+            "messages": messages,
+            "max_tokens": max(1, config.maxTokens ?? 2048),
+        ]
+
+        if let system, !system.isEmpty {
+            body["system"] = system
+        }
+
+        if let temperature = config.temperature {
+            body["temperature"] = temperature
+        }
+
+        if !config.tools.isEmpty {
+            body["tools"] = self.normalizeToolsForAnthropic(config.tools)
+            body["tool_choice"] = ["type": "auto"]
+        }
+
+        if config.streaming {
+            body["stream"] = true
+        }
+
+        let modelExtras = ThinkingParserFactory.getExtraParameters(for: config.model)
+        for (key, value) in modelExtras {
+            self.applyAnthropicExtraParameter(key: key, value: value, body: &body)
+        }
+
+        for (key, value) in config.extraParameters {
+            self.applyAnthropicExtraParameter(key: key, value: value, body: &body)
+        }
+
+        return body
+    }
+
+    private func convertMessagesToAnthropicInput(_ messages: [[String: Any]]) -> (String?, [[String: Any]]) {
+        var systemParts: [String] = []
+        var outputMessages: [[String: Any]] = []
+
+        for message in messages {
+            let role = (message["role"] as? String ?? "user").lowercased()
+
+            switch role {
+            case "system":
+                let text = self.extractStringContent(from: message)
+                if !text.isEmpty {
+                    systemParts.append(text)
+                }
+
+            case "tool":
+                let toolUseID = message["tool_call_id"] as? String ?? "tool_\(UUID().uuidString.prefix(8))"
+                var toolResult: [String: Any] = [
+                    "type": "tool_result",
+                    "tool_use_id": toolUseID,
+                ]
+
+                if let contentBlocks = message["content"] as? [[String: Any]], !contentBlocks.isEmpty {
+                    toolResult["content"] = contentBlocks
+                } else {
+                    let text = self.extractStringContent(from: message)
+                    if !text.isEmpty {
+                        toolResult["content"] = text
+                    }
+                }
+
+                if let isError = message["is_error"] as? Bool {
+                    toolResult["is_error"] = isError
+                }
+
+                outputMessages.append([
+                    "role": "user",
+                    "content": [toolResult],
+                ])
+
+            case "assistant":
+                let text = self.extractStringContent(from: message)
+                let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                var contentBlocks: [[String: Any]] = []
+
+                if !trimmedText.isEmpty {
+                    contentBlocks.append([
+                        "type": "text",
+                        "text": trimmedText,
+                    ])
+                }
+
+                if let toolCalls = message["tool_calls"] as? [[String: Any]], !toolCalls.isEmpty {
+                    for toolCall in toolCalls {
+                        let function = toolCall["function"] as? [String: Any]
+                        let name = function?["name"] as? String ?? toolCall["name"] as? String
+                        guard let toolName = name else { continue }
+
+                        let callID = toolCall["id"] as? String ?? "tool_\(UUID().uuidString.prefix(8))"
+                        let argumentsString = function?["arguments"] as? String ?? toolCall["arguments"] as? String ?? "{}"
+
+                        let input: [String: Any]
+                        if let data = argumentsString.data(using: .utf8),
+                           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                        {
+                            input = parsed
+                        } else {
+                            input = [:]
+                        }
+
+                        contentBlocks.append([
+                            "type": "tool_use",
+                            "id": callID,
+                            "name": toolName,
+                            "input": input,
+                        ])
+                    }
+                }
+
+                if contentBlocks.isEmpty,
+                   let blocks = message["content"] as? [[String: Any]],
+                   !blocks.isEmpty
+                {
+                    outputMessages.append([
+                        "role": "assistant",
+                        "content": blocks,
+                    ])
+                } else if contentBlocks.isEmpty {
+                    continue
+                } else {
+                    outputMessages.append([
+                        "role": "assistant",
+                        "content": contentBlocks,
+                    ])
+                }
+
+            default:
+                if let blocks = message["content"] as? [[String: Any]], !blocks.isEmpty {
+                    outputMessages.append([
+                        "role": "user",
+                        "content": blocks,
+                    ])
+                } else {
+                    outputMessages.append([
+                        "role": "user",
+                        "content": self.extractStringContent(from: message),
+                    ])
+                }
+            }
+        }
+
+        let mergedSystem = systemParts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+
+        return (mergedSystem.isEmpty ? nil : mergedSystem, outputMessages)
     }
 
     private func convertMessagesToResponsesInput(_ messages: [[String: Any]]) -> (String?, [[String: Any]]) {
@@ -452,6 +714,49 @@ final class LLMClient {
         }
     }
 
+    private func normalizeToolsForAnthropic(_ tools: [[String: Any]]) -> [[String: Any]] {
+        return tools.compactMap { tool in
+            let function = tool["function"] as? [String: Any]
+            let name = function?["name"] as? String ?? tool["name"] as? String
+            guard let toolName = name, !toolName.isEmpty else { return nil }
+
+            let description = function?["description"] as? String ?? tool["description"] as? String
+            var inputSchema = function?["parameters"] as? [String: Any] ??
+                tool["parameters"] as? [String: Any] ??
+                tool["input_schema"] as? [String: Any] ?? [:]
+
+            if inputSchema["type"] == nil {
+                inputSchema["type"] = "object"
+            }
+            if inputSchema["properties"] == nil {
+                inputSchema["properties"] = [:]
+            }
+
+            var normalized: [String: Any] = [
+                "name": toolName,
+                "input_schema": inputSchema,
+            ]
+
+            if let description, !description.isEmpty {
+                normalized["description"] = description
+            }
+
+            if let strict = function?["strict"] ?? tool["strict"] {
+                normalized["strict"] = strict
+            }
+
+            if let inputExamples = function?["input_examples"] ?? tool["input_examples"] {
+                normalized["input_examples"] = inputExamples
+            }
+
+            if let cacheControl = tool["cache_control"] {
+                normalized["cache_control"] = cacheControl
+            }
+
+            return normalized
+        }
+    }
+
     private func applyResponsesExtraParameter(key: String, value: Any, body: inout [String: Any]) {
         switch key {
         case "reasoning_effort":
@@ -461,6 +766,34 @@ final class LLMClient {
         default:
             body[key] = value
         }
+    }
+
+    private func applyAnthropicExtraParameter(key: String, value: Any, body: inout [String: Any]) {
+        switch key {
+        case "reasoning_effort", "enable_thinking", "max_output_tokens", "max_completion_tokens":
+            // OpenAI-compatible parameters are ignored on Anthropic payloads.
+            return
+        default:
+            body[key] = value
+        }
+    }
+
+    private func extractStringContent(from message: [String: Any]) -> String {
+        if let text = message["content"] as? String {
+            return text
+        }
+
+        guard let blocks = message["content"] as? [[String: Any]] else {
+            return ""
+        }
+
+        return blocks.compactMap { block in
+            let type = (block["type"] as? String ?? "").lowercased()
+            if type == "text" {
+                return block["text"] as? String
+            }
+            return nil
+        }.joined()
     }
 
     // MARK: - Non-Streaming Response
@@ -480,6 +813,10 @@ final class LLMClient {
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw LLMError.invalidResponse
+        }
+
+        if self.isAnthropicMessagesRequest(request) {
+            return self.parseAnthropicResponse(json)
         }
 
         if self.isResponsesRequest(request) {
@@ -511,8 +848,9 @@ final class LLMClient {
             throw LLMError.httpError(http.statusCode, errText)
         }
 
-        // Create the appropriate parser for this model
-        var parser = ThinkingParserFactory.createParser(for: config.model)
+        // Create the appropriate parser for this model.
+        // Anthropic streams thinking and text in separate content blocks, so we always use separate-field parsing there.
+        var parser: ThinkingParser = ThinkingParserFactory.createParser(for: config.model)
 
         // Streaming state
         var state = ThinkingParserState.initial
@@ -521,6 +859,11 @@ final class LLMClient {
         var tagDetectionBuffer = ""
 
         let isResponses = self.isResponsesRequest(request)
+        let isAnthropic = self.isAnthropicMessagesRequest(request)
+
+        if isAnthropic {
+            parser = SeparateFieldThinkingParser()
+        }
 
         // Tool call accumulation (supports multiple tool calls in one streamed response)
         struct StreamingToolAccumulator {
@@ -530,6 +873,7 @@ final class LLMClient {
         }
         var toolCallAccumulators: [String: StreamingToolAccumulator] = [:]
         var sawOutputTextDelta = false
+        var anthropicToolIndexToID: [Int: String] = [:]
 
         func processContentChunk(_ content: String) {
             let containsThinkTag = content.contains("<think") || content.contains("</think") || content.contains("<thinking") || content.contains("</thinking")
@@ -592,6 +936,87 @@ final class LLMClient {
             guard let jsonData = jsonString.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any]
             else {
+                continue
+            }
+
+            if isAnthropic {
+                let eventType = json["type"] as? String ?? ""
+
+                if eventType == "error",
+                   let errorObject = json["error"] as? [String: Any],
+                   let message = errorObject["message"] as? String
+                {
+                    throw LLMError.httpError(500, message)
+                }
+
+                switch eventType {
+                case "content_block_start":
+                    guard let index = json["index"] as? Int,
+                          let contentBlock = json["content_block"] as? [String: Any]
+                    else { continue }
+
+                    let blockType = contentBlock["type"] as? String ?? ""
+
+                    if blockType == "tool_use" {
+                        let id = contentBlock["id"] as? String ?? "tool_\(UUID().uuidString.prefix(8))"
+                        let name = contentBlock["name"] as? String
+                        var accumulator = toolCallAccumulators[id] ?? StreamingToolAccumulator()
+                        accumulator.id = id
+
+                        if let name {
+                            if accumulator.name == nil {
+                                config.onToolCallStart?(name)
+                            }
+                            accumulator.name = name
+                        }
+
+                        if let input = contentBlock["input"] as? [String: Any],
+                           !input.isEmpty,
+                           let inputData = try? JSONSerialization.data(withJSONObject: input, options: []),
+                           let inputJSON = String(data: inputData, encoding: .utf8)
+                        {
+                            accumulator.arguments = inputJSON
+                        }
+
+                        toolCallAccumulators[id] = accumulator
+                        anthropicToolIndexToID[index] = id
+                    }
+
+                case "content_block_delta":
+                    guard let delta = json["delta"] as? [String: Any] else { continue }
+                    let deltaType = delta["type"] as? String ?? ""
+
+                    switch deltaType {
+                    case "text_delta":
+                        if let text = delta["text"] as? String {
+                            processContentChunk(text)
+                        }
+
+                    case "thinking_delta":
+                        if let thinking = delta["thinking"] as? String {
+                            processReasoningChunk(thinking)
+                        }
+
+                    case "input_json_delta":
+                        guard let index = json["index"] as? Int else { continue }
+                        let toolID = anthropicToolIndexToID[index] ?? "index_\(index)"
+                        var accumulator = toolCallAccumulators[toolID] ?? StreamingToolAccumulator()
+                        accumulator.id = accumulator.id ?? toolID
+
+                        if let partialJSON = delta["partial_json"] as? String {
+                            accumulator.arguments += partialJSON
+                        }
+
+                        toolCallAccumulators[toolID] = accumulator
+
+                    default:
+                        break
+                    }
+
+                default:
+                    break
+                }
+
                 continue
             }
 
@@ -838,6 +1263,76 @@ final class LLMClient {
         )
     }
 
+    private func parseAnthropicResponse(_ json: [String: Any]) -> Response {
+        var contentParts: [String] = []
+        var thinkingParts: [String] = []
+        var toolCalls: [ToolCall] = []
+
+        if let contentBlocks = json["content"] as? [[String: Any]] {
+            for block in contentBlocks {
+                let type = block["type"] as? String ?? ""
+
+                switch type {
+                case "text":
+                    if let text = block["text"] as? String, !text.isEmpty {
+                        contentParts.append(text)
+                    }
+
+                case "thinking":
+                    if let thinking = block["thinking"] as? String, !thinking.isEmpty {
+                        thinkingParts.append(thinking)
+                    }
+
+                case "redacted_thinking":
+                    if let redacted = block["data"] as? String, !redacted.isEmpty {
+                        thinkingParts.append(redacted)
+                    }
+
+                case "tool_use":
+                    if let toolCall = self.parseAnthropicToolUse(block) {
+                        toolCalls.append(toolCall)
+                    }
+
+                default:
+                    break
+                }
+            }
+        }
+
+        let content = contentParts.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        let thinking = thinkingParts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+
+        return Response(
+            thinking: thinking.isEmpty ? nil : thinking,
+            content: content,
+            toolCalls: toolCalls
+        )
+    }
+
+    private func parseAnthropicToolUse(_ block: [String: Any]) -> ToolCall? {
+        guard let name = block["name"] as? String else {
+            return nil
+        }
+
+        let id = block["id"] as? String ?? "tool_\(UUID().uuidString.prefix(8))"
+
+        if let input = block["input"] as? [String: Any] {
+            return ToolCall(id: id, name: name, arguments: input)
+        }
+
+        if let inputString = block["input"] as? String,
+           let data = inputString.data(using: .utf8),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        {
+            return ToolCall(id: id, name: name, arguments: parsed)
+        }
+
+        return ToolCall(id: id, name: name, arguments: [:])
+    }
+
     private func extractTextParts(from messageItem: [String: Any]) -> [String] {
         if let text = messageItem["content"] as? String {
             return text.isEmpty ? [] : [text]
@@ -1004,6 +1499,20 @@ final class LLMClient {
         request.url?.path.contains("/responses") == true
     }
 
+    private func isAnthropicMessagesRequest(_ request: URLRequest) -> Bool {
+        if request.value(forHTTPHeaderField: "anthropic-version") != nil {
+            return true
+        }
+
+        if request.url?.path.contains("/messages") == true,
+           request.url?.host?.lowercased().contains("anthropic.com") == true
+        {
+            return true
+        }
+
+        return false
+    }
+
     private func shouldFallbackToChat(statusCode: Int, message: String) -> Bool {
         if statusCode == 404 || statusCode == 405 {
             return true
@@ -1078,7 +1587,9 @@ final class LLMClient {
 
         var curl = "curl -X \(method) \"\(url.absoluteString)\" \\\n"
         for (key, value) in request.allHTTPHeaderFields ?? [:] {
-            let maskedValue = key.lowercased().contains("auth") ? "Bearer [REDACTED]" : value
+            let loweredKey = key.lowercased()
+            let shouldMask = loweredKey.contains("auth") || loweredKey.contains("api-key")
+            let maskedValue = shouldMask ? "[REDACTED]" : value
             curl += "  -H \"\(key): \(maskedValue)\" \\\n"
         }
         curl += "  -d '\(bodyString)'"

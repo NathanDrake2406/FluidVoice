@@ -246,3 +246,473 @@ final class DictationE2ETests: XCTestCase {
         )
     }
 }
+
+private final class MockLLMURLProtocol: URLProtocol {
+    struct MockResponse {
+        let statusCode: Int
+        let headers: [String: String]
+        let body: Data
+
+        init(statusCode: Int, headers: [String: String] = [:], body: Data) {
+            self.statusCode = statusCode
+            self.headers = headers
+            self.body = body
+        }
+    }
+
+    private static let queue = DispatchQueue(label: "MockLLMURLProtocol.queue")
+    private static var requestHandler: ((URLRequest, Int) throws -> MockResponse)?
+    private static var recordedRequests: [URLRequest] = []
+
+    static func configure(handler: @escaping (URLRequest, Int) throws -> MockResponse) {
+        self.queue.sync {
+            self.recordedRequests = []
+            self.requestHandler = handler
+        }
+    }
+
+    static func reset() {
+        self.queue.sync {
+            self.recordedRequests = []
+            self.requestHandler = nil
+        }
+    }
+
+    static var requests: [URLRequest] {
+        self.queue.sync {
+            self.recordedRequests
+        }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        return true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        return request
+    }
+
+    override func startLoading() {
+        let (handler, requestIndex) = Self.queue.sync { () -> (((URLRequest, Int) throws -> MockResponse)?, Int) in
+            let index = Self.recordedRequests.count
+            Self.recordedRequests.append(self.request)
+            return (Self.requestHandler, index)
+        }
+
+        guard let handler else {
+            self.client?.urlProtocol(
+                self,
+                didFailWithError: NSError(domain: "MockLLMURLProtocol", code: -1, userInfo: [NSLocalizedDescriptionKey: "No request handler configured"])
+            )
+            return
+        }
+
+        do {
+            let mock = try handler(self.request, requestIndex)
+            guard let url = self.request.url,
+                  let response = HTTPURLResponse(url: url, statusCode: mock.statusCode, httpVersion: nil, headerFields: mock.headers)
+            else {
+                self.client?.urlProtocol(
+                    self,
+                    didFailWithError: NSError(domain: "MockLLMURLProtocol", code: -2, userInfo: [NSLocalizedDescriptionKey: "Failed to build HTTPURLResponse"])
+                )
+                return
+            }
+
+            self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            if !mock.body.isEmpty {
+                self.client?.urlProtocol(self, didLoad: mock.body)
+            }
+            self.client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            self.client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
+@MainActor
+final class LLMClientRoutingTests: XCTestCase {
+    override func tearDown() {
+        MockLLMURLProtocol.reset()
+        super.tearDown()
+    }
+
+    func testAnthropicProvider_routesToMessagesWithAnthropicHeaders() async throws {
+        MockLLMURLProtocol.configure { _, _ in
+            let payload: [String: Any] = [
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [[
+                    "type": "text",
+                    "text": "Anthropic ok",
+                ]],
+            ]
+
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            return MockLLMURLProtocol.MockResponse(statusCode: 200, body: data)
+        }
+
+        let client = self.makeClient()
+        let config = LLMClient.Config(
+            messages: [["role": "user", "content": "Hello"]],
+            providerID: "anthropic",
+            model: "claude-3-5-sonnet-latest",
+            baseURL: "https://api.anthropic.com/v1",
+            apiKey: "anthropic-test-key",
+            streaming: false
+        )
+
+        let response = try await client.call(config)
+        XCTAssertEqual(response.content, "Anthropic ok")
+
+        let requests = MockLLMURLProtocol.requests
+        XCTAssertEqual(requests.count, 1)
+
+        guard let request = requests.first else {
+            XCTFail("Expected one captured request")
+            return
+        }
+
+        XCTAssertEqual(request.url?.absoluteString, "https://api.anthropic.com/v1/messages")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-api-key"), "anthropic-test-key")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "anthropic-version"), "2023-06-01")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+    }
+
+    func testOpenAICompatibleProvider_fallsBackFromResponsesToChatCompletions() async throws {
+        MockLLMURLProtocol.configure { _, requestIndex in
+            if requestIndex == 0 {
+                let body = Data("{\"error\":\"responses endpoint not supported\"}".utf8)
+                return MockLLMURLProtocol.MockResponse(statusCode: 404, body: body)
+            }
+
+            let payload: [String: Any] = [
+                "choices": [[
+                    "message": [
+                        "role": "assistant",
+                        "content": "Fallback response",
+                    ],
+                ]],
+            ]
+
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            return MockLLMURLProtocol.MockResponse(statusCode: 200, body: data)
+        }
+
+        let client = self.makeClient()
+        let config = LLMClient.Config(
+            messages: [["role": "user", "content": "Hello"]],
+            providerID: "openai",
+            model: "gpt-4o-mini",
+            baseURL: "https://api.openai.com/v1",
+            apiKey: "openai-test-key",
+            streaming: false
+        )
+
+        let response = try await client.call(config)
+        XCTAssertEqual(response.content, "Fallback response")
+
+        let requests = MockLLMURLProtocol.requests
+        XCTAssertEqual(requests.count, 2)
+
+        guard requests.count == 2 else {
+            XCTFail("Expected responses request then chat completions fallback")
+            return
+        }
+
+        XCTAssertEqual(requests[0].url?.path, "/v1/responses")
+        XCTAssertEqual(requests[1].url?.path, "/v1/chat/completions")
+        XCTAssertEqual(requests[0].value(forHTTPHeaderField: "Authorization"), "Bearer openai-test-key")
+        XCTAssertEqual(requests[1].value(forHTTPHeaderField: "Authorization"), "Bearer openai-test-key")
+
+        let firstBody = try self.decodeJSONBody(from: requests[0])
+        XCTAssertNotNil(firstBody["input"])
+        XCTAssertNil(firstBody["messages"])
+
+        let secondBody = try self.decodeJSONBody(from: requests[1])
+        XCTAssertNotNil(secondBody["messages"])
+    }
+
+    func testAnthropicPayload_normalizesToolCallsAndFiltersOpenAIOnlyExtras() async throws {
+        MockLLMURLProtocol.configure { _, _ in
+            let payload: [String: Any] = [
+                "type": "message",
+                "content": [[
+                    "type": "text",
+                    "text": "Done",
+                ]],
+            ]
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            return MockLLMURLProtocol.MockResponse(statusCode: 200, body: data)
+        }
+
+        let client = self.makeClient()
+
+        let tools: [[String: Any]] = [
+            [
+                "type": "function",
+                "function": [
+                    "name": "get_weather",
+                    "description": "Get weather by city",
+                    "parameters": [
+                        "type": "object",
+                        "properties": [
+                            "city": ["type": "string"],
+                        ],
+                        "required": ["city"],
+                    ],
+                ],
+            ],
+        ]
+
+        let messages: [[String: Any]] = [
+            ["role": "system", "content": "System behavior"],
+            ["role": "user", "content": "Find weather"],
+            [
+                "role": "assistant",
+                "content": "Checking weather",
+                "tool_calls": [
+                    [
+                        "id": "call_weather",
+                        "type": "function",
+                        "function": [
+                            "name": "get_weather",
+                            "arguments": "{\"city\":\"Paris\"}",
+                        ],
+                    ],
+                ],
+            ],
+            [
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": "{\"temp_c\":21}",
+            ],
+        ]
+
+        let config = LLMClient.Config(
+            messages: messages,
+            providerID: "anthropic",
+            model: "claude-3-5-sonnet-latest",
+            baseURL: "https://api.anthropic.com/v1",
+            apiKey: "anthropic-test-key",
+            streaming: false,
+            tools: tools,
+            temperature: 0.2,
+            maxTokens: 512,
+            extraParameters: [
+                "reasoning_effort": "high",
+                "enable_thinking": true,
+                "metadata": ["source": "tests"],
+            ]
+        )
+
+        _ = try await client.call(config)
+
+        guard let request = MockLLMURLProtocol.requests.first else {
+            XCTFail("Expected one captured request")
+            return
+        }
+
+        let body = try self.decodeJSONBody(from: request)
+        XCTAssertEqual(body["system"] as? String, "System behavior")
+        XCTAssertEqual(body["max_tokens"] as? Int, 512)
+        XCTAssertNil(body["reasoning_effort"])
+        XCTAssertNil(body["enable_thinking"])
+
+        let metadata = body["metadata"] as? [String: String]
+        XCTAssertEqual(metadata?["source"], "tests")
+
+        guard let bodyTools = body["tools"] as? [[String: Any]],
+              let firstTool = bodyTools.first
+        else {
+            XCTFail("Expected normalized anthropic tool payload")
+            return
+        }
+
+        XCTAssertEqual(firstTool["name"] as? String, "get_weather")
+        let inputSchema = firstTool["input_schema"] as? [String: Any]
+        XCTAssertEqual(inputSchema?["type"] as? String, "object")
+
+        guard let bodyMessages = body["messages"] as? [[String: Any]] else {
+            XCTFail("Expected anthropic messages array")
+            return
+        }
+
+        let assistantMessage = bodyMessages.first { ($0["role"] as? String) == "assistant" }
+        let assistantBlocks = assistantMessage?["content"] as? [[String: Any]]
+        let toolUseBlock = assistantBlocks?.first { ($0["type"] as? String) == "tool_use" }
+        XCTAssertEqual(toolUseBlock?["id"] as? String, "call_weather")
+        XCTAssertEqual(toolUseBlock?["name"] as? String, "get_weather")
+        let toolUseInput = toolUseBlock?["input"] as? [String: Any]
+        XCTAssertEqual(toolUseInput?["city"] as? String, "Paris")
+
+        let toolResultMessage = bodyMessages.first { message in
+            guard let blocks = message["content"] as? [[String: Any]] else { return false }
+            return blocks.contains { ($0["type"] as? String) == "tool_result" }
+        }
+        let toolResultBlocks = toolResultMessage?["content"] as? [[String: Any]]
+        let toolResult = toolResultBlocks?.first { ($0["type"] as? String) == "tool_result" }
+        XCTAssertEqual(toolResult?["tool_use_id"] as? String, "call_weather")
+    }
+
+    func testAnthropicStreaming_parsesThinkingTextAndToolArguments() async throws {
+        MockLLMURLProtocol.configure { _, _ in
+            let events: [[String: Any]] = [
+                [
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": [
+                        "type": "thinking_delta",
+                        "thinking": "Plan first.",
+                    ],
+                ],
+                [
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": [
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "lookup",
+                    ],
+                ],
+                [
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": [
+                        "type": "input_json_delta",
+                        "partial_json": "{\"city\":\"Paris\"}",
+                    ],
+                ],
+                [
+                    "type": "content_block_delta",
+                    "index": 2,
+                    "delta": [
+                        "type": "text_delta",
+                        "text": "It is sunny.",
+                    ],
+                ],
+            ]
+
+            var streamText = ""
+            for event in events {
+                let eventData = try JSONSerialization.data(withJSONObject: event)
+                let eventLine = String(decoding: eventData, as: UTF8.self)
+                streamText += "data: \(eventLine)\\n\\n"
+            }
+            streamText += "data: [DONE]\\n\\n"
+
+            return MockLLMURLProtocol.MockResponse(
+                statusCode: 200,
+                headers: ["Content-Type": "text/event-stream"],
+                body: Data(streamText.utf8)
+            )
+        }
+
+        let client = self.makeClient()
+        let config = LLMClient.Config(
+            messages: [["role": "user", "content": "Weather in Paris?"]],
+            providerID: "anthropic",
+            model: "claude-3-5-sonnet-latest",
+            baseURL: "https://api.anthropic.com/v1",
+            apiKey: "anthropic-test-key",
+            streaming: true
+        )
+
+        let response = try await client.call(config)
+
+        XCTAssertEqual(response.thinking, "Plan first.")
+        XCTAssertEqual(response.content, "It is sunny.")
+        XCTAssertEqual(response.toolCalls.count, 1)
+        XCTAssertEqual(response.toolCalls.first?.id, "toolu_1")
+        XCTAssertEqual(response.toolCalls.first?.name, "lookup")
+        XCTAssertEqual(response.toolCalls.first?.arguments["city"] as? String, "Paris")
+    }
+
+    func testAnthropicStreaming_parsesToolArgumentsWhenStartBlockContainsEmptyInput() async throws {
+        MockLLMURLProtocol.configure { _, _ in
+            let events: [[String: Any]] = [
+                [
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": [
+                        "type": "tool_use",
+                        "id": "toolu_2",
+                        "name": "lookup",
+                        "input": [:],
+                    ],
+                ],
+                [
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": [
+                        "type": "input_json_delta",
+                        "partial_json": "{\"city\":\"Berlin\"}",
+                    ],
+                ],
+                [
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": [
+                        "type": "text_delta",
+                        "text": "Done.",
+                    ],
+                ],
+            ]
+
+            var streamText = ""
+            for event in events {
+                let eventData = try JSONSerialization.data(withJSONObject: event)
+                let eventLine = String(decoding: eventData, as: UTF8.self)
+                streamText += "data: \(eventLine)\\n\\n"
+            }
+            streamText += "data: [DONE]\\n\\n"
+
+            return MockLLMURLProtocol.MockResponse(
+                statusCode: 200,
+                headers: ["Content-Type": "text/event-stream"],
+                body: Data(streamText.utf8)
+            )
+        }
+
+        let client = self.makeClient()
+        let config = LLMClient.Config(
+            messages: [["role": "user", "content": "Weather in Berlin?"]],
+            providerID: "anthropic",
+            model: "claude-3-5-sonnet-latest",
+            baseURL: "https://api.anthropic.com/v1",
+            apiKey: "anthropic-test-key",
+            streaming: true
+        )
+
+        let response = try await client.call(config)
+
+        XCTAssertEqual(response.content, "Done.")
+        XCTAssertEqual(response.toolCalls.count, 1)
+        XCTAssertEqual(response.toolCalls.first?.id, "toolu_2")
+        XCTAssertEqual(response.toolCalls.first?.arguments["city"] as? String, "Berlin")
+    }
+
+    private func makeClient() -> LLMClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockLLMURLProtocol.self]
+        configuration.timeoutIntervalForRequest = 5
+        configuration.timeoutIntervalForResource = 5
+        let session = URLSession(configuration: configuration)
+        return LLMClient(session: session)
+    }
+
+    private func decodeJSONBody(from request: URLRequest) throws -> [String: Any] {
+        guard let body = request.httpBody else {
+            XCTFail("Expected HTTP body")
+            return [:]
+        }
+        guard let json = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+            XCTFail("Expected JSON dictionary body")
+            return [:]
+        }
+        return json
+    }
+}

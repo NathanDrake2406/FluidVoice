@@ -331,6 +331,7 @@ final class RewriteModeService: ObservableObject {
         // Build LLMClient configuration
         var config = LLMClient.Config(
             messages: apiMessages,
+            providerID: providerID,
             model: model,
             baseURL: baseURL,
             apiKey: apiKey,
