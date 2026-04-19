@@ -570,16 +570,16 @@ final class MCPManager {
 
     private static func convertToolContent(_ content: Tool.Content) -> ToolExecutionContent {
         switch content {
-        case .text(let text, _, _):
+        case let .text(text, _, _):
             return ToolExecutionContent(
                 type: "text", text: text, data: nil, mimeType: nil, uri: nil, metadata: [:])
-        case .image(let data, let mimeType, _, _):
+        case let .image(data, mimeType, _, _):
             return ToolExecutionContent(
                 type: "image", text: nil, data: data, mimeType: mimeType, uri: nil, metadata: [:])
-        case .audio(let data, let mimeType, _, _):
+        case let .audio(data, mimeType, _, _):
             return ToolExecutionContent(
                 type: "audio", text: nil, data: data, mimeType: mimeType, uri: nil, metadata: [:])
-        case .resource(let resource, _, _):
+        case let .resource(resource, _, _):
             return ToolExecutionContent(
                 type: "resource",
                 text: resource.text,
@@ -588,12 +588,17 @@ final class MCPManager {
                 uri: resource.uri,
                 metadata: [:]
             )
-        case .resourceLink(let uri, let name, let title, let description, let mimeType, _):
+        case let .resourceLink(uri, name, title, description, mimeType, _):
             let parts = [name, title, description].compactMap { $0 }.filter { !$0.isEmpty }
             let summary = parts.isEmpty ? nil : parts.joined(separator: " - ")
             return ToolExecutionContent(
-                type: "resource_link", text: summary, data: nil, mimeType: mimeType, uri: uri,
-                metadata: [:])
+                type: "resource_link",
+                text: summary,
+                data: nil,
+                mimeType: mimeType,
+                uri: uri,
+                metadata: [:]
+            )
         }
     }
 
@@ -637,7 +642,7 @@ final class MCPManager {
             return double
         case .string(let string):
             return string
-        case .data(let mimeType, let data):
+        case let .data(mimeType, data):
             var payload: [String: Any] = [
                 "type": "data",
                 "data": data.base64EncodedString(),
