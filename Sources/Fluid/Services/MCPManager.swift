@@ -23,7 +23,7 @@ final class MCPManager {
         let data: String?
         let mimeType: String?
         let uri: String?
-        let metadata: [String: String]?
+        let metadata: [String: String]
     }
 
     struct ToolExecutionResult: Sendable {
@@ -586,7 +586,7 @@ final class MCPManager {
                 data: resource.blob,
                 mimeType: resource.mimeType,
                 uri: resource.uri,
-                metadata: nil
+                metadata: [:]
             )
         case .resourceLink(let uri, let name, let title, let description, let mimeType, _):
             let parts = [name, title, description].compactMap { $0 }.filter { !$0.isEmpty }

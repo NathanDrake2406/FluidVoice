@@ -247,7 +247,7 @@ final class DictationE2ETests: XCTestCase {
     }
 }
 
-private final class MockLLMURLProtocol: URLProtocol {
+private class MockLLMURLProtocol: URLProtocol {
     struct MockResponse {
         let statusCode: Int
         let headers: [String: String]
@@ -599,7 +599,13 @@ final class LLMClientRoutingTests: XCTestCase {
             var streamText = ""
             for event in events {
                 let eventData = try JSONSerialization.data(withJSONObject: event)
-                let eventLine = String(decoding: eventData, as: UTF8.self)
+                guard let eventLine = String(bytes: eventData, encoding: .utf8) else {
+                    throw NSError(
+                        domain: "MockLLMURLProtocol",
+                        code: -3,
+                        userInfo: [NSLocalizedDescriptionKey: "Failed to encode mock SSE event"]
+                    )
+                }
                 streamText += "data: \(eventLine)\\n\\n"
             }
             streamText += "data: [DONE]\\n\\n"
@@ -665,7 +671,13 @@ final class LLMClientRoutingTests: XCTestCase {
             var streamText = ""
             for event in events {
                 let eventData = try JSONSerialization.data(withJSONObject: event)
-                let eventLine = String(decoding: eventData, as: UTF8.self)
+                guard let eventLine = String(bytes: eventData, encoding: .utf8) else {
+                    throw NSError(
+                        domain: "MockLLMURLProtocol",
+                        code: -4,
+                        userInfo: [NSLocalizedDescriptionKey: "Failed to encode mock SSE event"]
+                    )
+                }
                 streamText += "data: \(eventLine)\\n\\n"
             }
             streamText += "data: [DONE]\\n\\n"
