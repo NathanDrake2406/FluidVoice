@@ -572,13 +572,13 @@ final class MCPManager {
         switch content {
         case .text(let text, _, _):
             return ToolExecutionContent(
-                type: "text", text: text, data: nil, mimeType: nil, uri: nil, metadata: nil)
+                type: "text", text: text, data: nil, mimeType: nil, uri: nil, metadata: [:])
         case .image(let data, let mimeType, _, _):
             return ToolExecutionContent(
-                type: "image", text: nil, data: data, mimeType: mimeType, uri: nil, metadata: nil)
+                type: "image", text: nil, data: data, mimeType: mimeType, uri: nil, metadata: [:])
         case .audio(let data, let mimeType, _, _):
             return ToolExecutionContent(
-                type: "audio", text: nil, data: data, mimeType: mimeType, uri: nil, metadata: nil)
+                type: "audio", text: nil, data: data, mimeType: mimeType, uri: nil, metadata: [:])
         case .resource(let resource, _, _):
             return ToolExecutionContent(
                 type: "resource",
@@ -593,7 +593,7 @@ final class MCPManager {
             let summary = parts.isEmpty ? nil : parts.joined(separator: " - ")
             return ToolExecutionContent(
                 type: "resource_link", text: summary, data: nil, mimeType: mimeType, uri: uri,
-                metadata: nil)
+                metadata: [:])
         }
     }
 

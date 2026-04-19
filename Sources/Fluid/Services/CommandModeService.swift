@@ -1338,11 +1338,7 @@ final class CommandModeService: ObservableObject {
             apiKey: apiKey,
             streaming: enableStreaming,
             tools: allTools,
-            temperature: isReasoningModel ? nil : 0.1,
-            tools: [TerminalService.toolDefinition],
-            temperature: isTemperatureUnsupported ? nil : 0.1,
-            tools: allTools,
-            temperature: isReasoningModel ? nil : 0.1,
+            temperature: (isReasoningModel || isTemperatureUnsupported) ? nil : 0.1,
             maxTokens: isReasoningModel ? 32_000 : nil,  // Reasoning models like o1 need a large budget for extended thought chains
             extraParameters: extraParams
         )
