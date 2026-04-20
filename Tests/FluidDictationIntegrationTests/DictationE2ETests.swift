@@ -606,9 +606,9 @@ final class LLMClientRoutingTests: XCTestCase {
                         userInfo: [NSLocalizedDescriptionKey: "Failed to encode mock SSE event"]
                     )
                 }
-                streamText += "data: \(eventLine)\\n\\n"
+                streamText += "data: \(eventLine)\n\n"
             }
-            streamText += "data: [DONE]\\n\\n"
+            streamText += "data: [DONE]\n\n"
 
             return MockLLMURLProtocol.MockResponse(
                 statusCode: 200,
@@ -678,9 +678,9 @@ final class LLMClientRoutingTests: XCTestCase {
                         userInfo: [NSLocalizedDescriptionKey: "Failed to encode mock SSE event"]
                     )
                 }
-                streamText += "data: \(eventLine)\\n\\n"
+                streamText += "data: \(eventLine)\n\n"
             }
-            streamText += "data: [DONE]\\n\\n"
+            streamText += "data: [DONE]\n\n"
 
             return MockLLMURLProtocol.MockResponse(
                 statusCode: 200,
@@ -717,14 +717,50 @@ final class LLMClientRoutingTests: XCTestCase {
     }
 
     private func decodeJSONBody(from request: URLRequest) throws -> [String: Any] {
-        guard let body = request.httpBody else {
-            XCTFail("Expected HTTP body")
-            return [:]
-        }
+        let body = try self.extractBodyData(from: request)
         guard let json = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
             XCTFail("Expected JSON dictionary body")
             return [:]
         }
         return json
+    }
+
+    private func extractBodyData(from request: URLRequest) throws -> Data {
+        if let body = request.httpBody {
+            return body
+        }
+
+        guard let stream = request.httpBodyStream else {
+            XCTFail("Expected HTTP body")
+            return Data()
+        }
+
+        stream.open()
+        defer { stream.close() }
+
+        let bufferSize = 4096
+        var data = Data()
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+        defer { buffer.deallocate() }
+
+        while stream.hasBytesAvailable {
+            let bytesRead = stream.read(buffer, maxLength: bufferSize)
+            if bytesRead < 0 {
+                throw stream.streamError ?? NSError(
+                    domain: "LLMClientRoutingTests",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Failed reading request body stream"]
+                )
+            }
+            if bytesRead == 0 {
+                break
+            }
+            data.append(buffer, count: bytesRead)
+        }
+
+        if data.isEmpty {
+            XCTFail("Expected HTTP body")
+        }
+        return data
     }
 }
