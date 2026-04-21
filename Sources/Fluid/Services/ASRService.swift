@@ -100,7 +100,14 @@ private actor ModelDownloadRegistry {
 final class ASRService: ObservableObject {
     @Published var isRunning: Bool = false
     @Published var finalText: String = ""
-    @Published var partialTranscription: String = ""
+    // Not @Published: writes fire 1-5x/s during streaming ASR. Routing them through
+    // objectWillChange invalidates every ContentView subscriber of AppServices, even
+    // though ContentView never reads this value. MenuBarManager subscribes directly.
+    private let partialTranscriptionSubject = CurrentValueSubject<String, Never>("")
+    var partialTranscription: String { self.partialTranscriptionSubject.value }
+    var partialTranscriptionPublisher: AnyPublisher<String, Never> {
+        self.partialTranscriptionSubject.eraseToAnyPublisher()
+    }
     @Published var wordBoostStatusText: String = "Word boost: off"
     @Published var micStatus: AVAuthorizationStatus = .notDetermined
     @Published var isAsrReady: Bool = false
@@ -749,7 +756,7 @@ final class ASRService: ObservableObject {
         DebugLogger.shared.debug("🧹 Clearing buffers and state", source: "ASRService")
         self.finalText.removeAll()
         self.audioBuffer.clear(keepingCapacity: true) // specific optimization for restart
-        self.partialTranscription.removeAll()
+        self.partialTranscriptionSubject.send("")
         self.previousFullTranscription.removeAll()
         self.lastBoostHitTerm = nil
         self.lastProcessedSampleCount = 0
@@ -1080,7 +1087,7 @@ final class ASRService: ObservableObject {
 
         // NOW it's safe to clear the buffer
         self.audioBuffer.clear()
-        self.partialTranscription.removeAll()
+        self.partialTranscriptionSubject.send("")
         self.previousFullTranscription.removeAll()
         self.lastBoostHitTerm = nil
         self.lastProcessedSampleCount = 0
@@ -2478,7 +2485,7 @@ final class ASRService: ObservableObject {
             if !newText.isEmpty {
                 // Smart diff: only show truly new words
                 let updatedText = self.smartDiffUpdate(previous: self.previousFullTranscription, current: newText)
-                self.partialTranscription = updatedText
+                self.partialTranscriptionSubject.send(updatedText)
                 self.previousFullTranscription = newText
 
                 DebugLogger.shared.debug("✅ Streaming: '\(updatedText)' (\(String(format: "%.2f", duration))s)", source: "ASRService")

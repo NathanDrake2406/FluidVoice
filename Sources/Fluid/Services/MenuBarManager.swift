@@ -83,7 +83,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
             .store(in: &self.cancellables)
 
         // Subscribe to partial transcription updates for streaming preview
-        asrService.$partialTranscription
+        asrService.partialTranscriptionPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] newText in
                 guard self != nil else { return }
