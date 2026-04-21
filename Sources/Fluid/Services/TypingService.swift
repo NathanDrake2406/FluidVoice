@@ -53,6 +53,7 @@ final class TypingService {
     private static let focusSnapshotQueue = DispatchQueue(label: "TypingService.FocusSnapshot")
     private static let pasteboardSessionSemaphore = DispatchSemaphore(value: 1)
     private static let pasteboardRestoreQueue = DispatchQueue(label: "TypingService.PasteboardRestore", qos: .utility)
+    private static let pasteboardReadWindowMicros: useconds_t = 200_000
     private static var focusSnapshot: FocusSnapshot?
 
     private var textInsertionMode: SettingsStore.TextInsertionMode {
@@ -940,7 +941,9 @@ final class TypingService {
         timeoutMicros: useconds_t
     ) -> PasteVerificationResult {
         guard let snapshot else {
-            usleep(timeoutMicros)
+            // timeoutMicros is sized for AX verification; with no snapshot, only the target's pasteboard-read window matters.
+            let fallbackWaitMicros = min(timeoutMicros, Self.pasteboardReadWindowMicros)
+            usleep(fallbackWaitMicros)
             return .unavailable
         }
 
