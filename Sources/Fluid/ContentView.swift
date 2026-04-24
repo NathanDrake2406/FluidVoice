@@ -1524,14 +1524,34 @@ struct ContentView: View {
 
         DebugLogger.shared.debug("processTextWithAI using provider=\(derivedCurrentProvider), model=\(derivedSelectedModel)", source: "ContentView")
 
-        // Resolve the effective system prompt once so every provider path
-        // honors transient overrides such as "Transcribe with Prompt".
+        // Resolve the effective prompt once so every provider path honors
+        // transient overrides such as "Transcribe with Prompt".
         let appInfo = self.recordingAppInfo ?? self.getCurrentAppInfo()
-        let systemPrompt: String = {
+        let promptText: String = {
             let override = overrideSystemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !override.isEmpty { return override }
             return self.buildSystemPrompt(appInfo: appInfo, dictationSlot: dictationSlot)
         }()
+
+        // Dictation cleanup folds the prompt + transcript into a single user
+        // turn (substituting `${transcript}` when present, otherwise appending
+        // the transcript after a blank line). Non-dictation callers — the AI
+        // chat tab specifically — keep the legacy two-message layout where
+        // the prompt is the system turn and the input is the user turn.
+        let isDictationCall = overrideSystemPrompt != nil || dictationSlot != nil
+
+        let systemPrompt: String
+        let userMessageContent: String
+        if isDictationCall {
+            systemPrompt = ""
+            userMessageContent = SettingsStore.renderDictationUserMessage(
+                promptText: promptText,
+                transcript: inputText
+            )
+        } else {
+            systemPrompt = promptText
+            userMessageContent = inputText
+        }
 
         // Route to Apple Intelligence if selected
         if currentSelectedProviderID == "apple-intelligence" {
@@ -1561,10 +1581,13 @@ struct ContentView: View {
                     self.logDictationPromptTrace("Built-in default system prompt (baseline)", value: SettingsStore.defaultSystemPromptText(for: .dictate))
                     self.logDictationPromptTrace("Final system prompt sent to model", value: systemPrompt)
                     self.logDictationPromptTrace("Input transcription (Q)", value: inputText)
+                    if userMessageContent != inputText {
+                        self.logDictationPromptTrace("Final user message sent to model", value: userMessageContent)
+                    }
                     self.logDictationPromptTrace("Selected context text", value: "<none (dictation mode)>")
                 }
                 DebugLogger.shared.debug("Using Apple Intelligence for transcription cleanup", source: "ContentView")
-                let output = await provider.process(systemPrompt: systemPrompt, userText: inputText)
+                let output = await provider.process(systemPrompt: systemPrompt, userText: userMessageContent)
                 if self.shouldTracePromptProcessing {
                     self.logDictationPromptTrace("Model answer (A)", value: output)
                 }
@@ -1612,6 +1635,9 @@ struct ContentView: View {
             }
             self.logDictationPromptTrace("Final system prompt sent to model", value: systemPrompt)
             self.logDictationPromptTrace("Input transcription (Q)", value: inputText)
+            if userMessageContent != inputText {
+                self.logDictationPromptTrace("Final user message sent to model", value: userMessageContent)
+            }
             self.logDictationPromptTrace("Selected context text", value: "<none (dictation mode)>")
         }
 
@@ -1639,11 +1665,15 @@ struct ContentView: View {
             )
         }
 
-        // Build messages array
-        let messages: [[String: Any]] = [
-            ["role": "system", "content": systemPrompt],
-            ["role": "user", "content": inputText],
-        ]
+        // Build messages array. For dictation cleanup the whole prompt +
+        // transcript is folded into a single user message, so we omit the
+        // (empty) system role. Non-dictation callers keep the legacy
+        // system + user shape.
+        var messages: [[String: Any]] = []
+        if !systemPrompt.isEmpty {
+            messages.append(["role": "system", "content": systemPrompt])
+        }
+        messages.append(["role": "user", "content": userMessageContent])
 
         // NOTE: Transcription doesn't need streaming - the full result appears at once
         // Streaming is only useful for Command/Rewrite modes where real-time display helps
