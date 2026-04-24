@@ -1538,9 +1538,7 @@ struct ContentView: View {
         // the transcript after a blank line). Non-dictation callers — the AI
         // chat tab specifically — keep the legacy two-message layout where
         // the prompt is the system turn and the input is the user turn.
-        let isDictationCall = overrideSystemPrompt != nil
-            || dictationSlot != nil
-            || self.currentDictationShortcutSlot(for: self.activeRecordingMode) != nil
+        let isDictationCall = overrideSystemPrompt != nil || dictationSlot != nil
 
         let systemPrompt: String
         let userMessageContent: String

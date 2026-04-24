@@ -962,8 +962,8 @@ final class SettingsStore: ObservableObject {
     /// the transcript is appended after a blank line, matching the pre-PR
     /// behaviour of sending the transcript as a separate user message.
     static func renderDictationUserMessage(promptText: String, transcript: String) -> String {
-        if promptText.contains(transcriptPlaceholder) {
-            return promptText.replacingOccurrences(of: transcriptPlaceholder, with: transcript)
+        if promptText.contains(self.transcriptPlaceholder) {
+            return promptText.replacingOccurrences(of: self.transcriptPlaceholder, with: transcript)
         }
         let trimmedPrompt = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedPrompt.isEmpty { return transcript }
