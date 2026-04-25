@@ -817,6 +817,16 @@ struct SettingsView: View {
                                     Divider().opacity(0.2)
 
                                     self.optionToggleRow(
+                                        title: "Notify AI Cleanup Failures",
+                                        description: "Show a macOS notification when AI cleanup fails and raw transcription is typed.",
+                                        isOn: Binding(
+                                            get: { SettingsStore.shared.notifyAIProcessingFailures },
+                                            set: { SettingsStore.shared.notifyAIProcessingFailures = $0 }
+                                        )
+                                    )
+                                    Divider().opacity(0.2)
+
+                                    self.optionToggleRow(
                                         title: "Weekends Don't Break Streak",
                                         description: "Skip Saturday and Sunday when calculating usage streaks. Perfect for weekday-only users.",
                                         isOn: Binding(

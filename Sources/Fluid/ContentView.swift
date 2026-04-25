@@ -254,6 +254,7 @@ struct ContentView: View {
                 let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
                 self.selectedSidebarItem = isOnboarded ? .preferences : .welcome
             }
+            self.handlePendingAppNavigation()
 
             // Reset auto-restart flag if permission was revoked (allows re-triggering if user re-grants)
             if !self.accessibilityEnabled {
@@ -605,6 +606,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openCustomDictionaryFromVoiceEngine)) { _ in
             self.selectedSidebarItem = .customDictionary
         }
+        .onReceive(NotificationCenter.default.publisher(for: .appNavigationRequested)) { _ in
+            self.handlePendingAppNavigation()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .settingsBackupDidRestore)) { _ in
             self.reloadSettingsStateAfterBackupRestore()
         }
@@ -794,6 +798,15 @@ struct ContentView: View {
         switch destination {
         case .preferences:
             self.selectedSidebarItem = .preferences
+        }
+    }
+
+    private func handlePendingAppNavigation() {
+        guard let destination = AppNavigationRouter.shared.consumePendingDestination() else { return }
+
+        switch destination {
+        case .history:
+            self.selectedSidebarItem = .history
         }
     }
 
@@ -1883,6 +1896,7 @@ struct ContentView: View {
                     source: "ContentView"
                 )
                 aiFallbackReason = error.localizedDescription
+                NotificationService.showAIProcessingFallback(error: error.localizedDescription)
                 finalText = transcribedText
             }
             let postProcessingLatencyMs = Int((Date().timeIntervalSince(postProcessingStart) * 1000).rounded())
@@ -2170,6 +2184,7 @@ struct ContentView: View {
                     source: "ContentView"
                 )
                 aiFallbackReason = error.localizedDescription
+                NotificationService.showAIProcessingFallback(error: error.localizedDescription)
                 finalText = transcribedText
             }
         }
