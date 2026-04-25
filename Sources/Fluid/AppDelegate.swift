@@ -8,14 +8,16 @@
 import AppKit
 import PromiseKit
 import SwiftUI
+import UserNotifications
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var updateCheckTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Bring up file logging + crash handlers immediately during launch.
         _ = FileLogger.shared
         DebugLogger.shared.info("Application launched", source: "AppDelegate")
+        UNUserNotificationCenter.current().delegate = self
 
         // Initialize app settings (dock visibility, etc.)
         SettingsStore.shared.initializeAppSettings()
@@ -74,6 +76,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return true
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        if userInfo[NotificationService.UserInfoKey.kind] as? String == NotificationService.Kind.aiProcessingFallback {
+            DispatchQueue.main.async {
+                AppNavigationRouter.shared.request(.history)
+                self.bringMainWindowToFront()
+            }
+        }
+
+        completionHandler()
     }
 
     private func forceFrontOnLaunch() {
