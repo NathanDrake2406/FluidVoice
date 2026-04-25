@@ -55,6 +55,7 @@ struct SettingsBackupPayload: Codable, Equatable {
     let transcriptionPreviewCharLimit: Int
     let userTypingWPM: Int
     let saveTranscriptionHistory: Bool
+    let notifyAIProcessingFailures: Bool?
     let weekendsDontBreakStreak: Bool
     let fillerWords: [String]
     let removeFillerWordsEnabled: Bool

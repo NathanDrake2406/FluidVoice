@@ -2218,6 +2218,7 @@ final class SettingsStore: ObservableObject {
             transcriptionPreviewCharLimit: self.transcriptionPreviewCharLimit,
             userTypingWPM: self.userTypingWPM,
             saveTranscriptionHistory: self.saveTranscriptionHistory,
+            notifyAIProcessingFailures: self.notifyAIProcessingFailures,
             weekendsDontBreakStreak: self.weekendsDontBreakStreak,
             fillerWords: self.fillerWords,
             removeFillerWordsEnabled: self.removeFillerWordsEnabled,
@@ -2287,6 +2288,9 @@ final class SettingsStore: ObservableObject {
         self.transcriptionPreviewCharLimit = payload.transcriptionPreviewCharLimit
         self.userTypingWPM = payload.userTypingWPM
         self.saveTranscriptionHistory = payload.saveTranscriptionHistory
+        if let notifyAIProcessingFailures = payload.notifyAIProcessingFailures {
+            self.notifyAIProcessingFailures = notifyAIProcessingFailures
+        }
         self.weekendsDontBreakStreak = payload.weekendsDontBreakStreak
         self.fillerWords = payload.fillerWords
         self.removeFillerWordsEnabled = payload.removeFillerWordsEnabled
