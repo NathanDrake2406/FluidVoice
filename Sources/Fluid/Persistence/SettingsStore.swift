@@ -952,6 +952,24 @@ final class SettingsStore: ObservableObject {
         self.promptResolution(for: mode, appBundleID: appBundleID).source
     }
 
+    /// Literal placeholder that gets substituted with the raw transcription
+    /// when composing the user message for a dictation cleanup call.
+    static let transcriptPlaceholder = "${transcript}"
+
+    /// Compose the user-turn string for a dictation cleanup call by folding
+    /// the transcript into the prompt template. If the template contains the
+    /// `${transcript}` placeholder, the placeholder is replaced; otherwise
+    /// the transcript is appended after a blank line, matching the pre-PR
+    /// behaviour of sending the transcript as a separate user message.
+    static func renderDictationUserMessage(promptText: String, transcript: String) -> String {
+        if promptText.contains(self.transcriptPlaceholder) {
+            return promptText.replacingOccurrences(of: self.transcriptPlaceholder, with: transcript)
+        }
+        let trimmedPrompt = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedPrompt.isEmpty { return transcript }
+        return promptText + "\n\n" + transcript
+    }
+
     private func defaultPromptResolution(
         for mode: PromptMode,
         source: PromptResolutionSource,
@@ -2079,6 +2097,15 @@ final class SettingsStore: ObservableObject {
             (modelLower.contains("deepseek") && modelLower.contains("reasoner"))
     }
 
+    /// Whether the model rejects the `temperature` parameter.
+    /// Covers reasoning models plus Anthropic models that have deprecated temperature
+    /// (Claude Opus 4.7+, which use extended thinking by default).
+    func isTemperatureUnsupported(_ model: String) -> Bool {
+        if self.isReasoningModel(model) { return true }
+        let modelLower = model.lowercased()
+        return modelLower.contains("claude-opus-4-7")
+    }
+
     /// Whether to display thinking tokens in the UI (Command Mode, Rewrite Mode)
     /// If false, thinking tokens are extracted but not shown to user
     var showThinkingTokens: Bool {
@@ -2162,6 +2189,18 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Whether to show a native notification when AI post-processing fails and raw text is used
+    var notifyAIProcessingFailures: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.notifyAIProcessingFailures)
+            return value as? Bool ?? true
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.notifyAIProcessingFailures)
+        }
+    }
+
     func makeBackupPayload() -> SettingsBackupPayload {
         SettingsBackupPayload(
             selectedProviderID: self.selectedProviderID,
@@ -2211,6 +2250,7 @@ final class SettingsStore: ObservableObject {
             transcriptionPreviewCharLimit: self.transcriptionPreviewCharLimit,
             userTypingWPM: self.userTypingWPM,
             saveTranscriptionHistory: self.saveTranscriptionHistory,
+            notifyAIProcessingFailures: self.notifyAIProcessingFailures,
             weekendsDontBreakStreak: self.weekendsDontBreakStreak,
             fillerWords: self.fillerWords,
             removeFillerWordsEnabled: self.removeFillerWordsEnabled,
@@ -2280,6 +2320,9 @@ final class SettingsStore: ObservableObject {
         self.transcriptionPreviewCharLimit = payload.transcriptionPreviewCharLimit
         self.userTypingWPM = payload.userTypingWPM
         self.saveTranscriptionHistory = payload.saveTranscriptionHistory
+        if let notifyAIProcessingFailures = payload.notifyAIProcessingFailures {
+            self.notifyAIProcessingFailures = notifyAIProcessingFailures
+        }
         self.weekendsDontBreakStreak = payload.weekendsDontBreakStreak
         self.fillerWords = payload.fillerWords
         self.removeFillerWordsEnabled = payload.removeFillerWordsEnabled
@@ -3590,6 +3633,7 @@ private extension SettingsStore {
         // Stats Keys
         static let userTypingWPM = "UserTypingWPM"
         static let saveTranscriptionHistory = "SaveTranscriptionHistory"
+        static let notifyAIProcessingFailures = "NotifyAIProcessingFailures"
 
         // Filler Words
         static let fillerWords = "FillerWords"

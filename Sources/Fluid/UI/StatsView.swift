@@ -9,6 +9,13 @@ struct StatsView: View {
     @State private var showWPMEditor: Bool = false
     @State private var editingWPM: String = ""
     @State private var chartDays: Int = 7 // Toggle between 7 and 30
+    @State private var hoveredActivityIndex: Int?
+
+    private static let activityTooltipDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEE MMM d")
+        return formatter
+    }()
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -214,7 +221,7 @@ struct StatsView: View {
                 } else {
                     // Bar chart
                     HStack(alignment: .bottom, spacing: self.chartDays == 7 ? 8 : 2) {
-                        ForEach(Array(data.enumerated()), id: \.offset) { _, item in
+                        ForEach(Array(data.enumerated()), id: \.offset) { index, item in
                             VStack(spacing: 4) {
                                 // Bar (avoid division by zero)
                                 let height = (item.words > 0 && maxWords > 0) ? CGFloat(item.words) / CGFloat(maxWords) *
@@ -222,6 +229,17 @@ struct StatsView: View {
                                 RoundedRectangle(cornerRadius: 3)
                                     .fill(item.words > 0 ? self.theme.palette.accent : Color.secondary.opacity(0.2))
                                     .frame(width: self.chartDays == 7 ? 30 : 8, height: max(2, height))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 3)
+                                            .stroke(self.hoveredActivityIndex == index ? self.theme.palette.accent.opacity(0.65) : Color.clear, lineWidth: 1)
+                                    )
+                                    .overlay(alignment: .top) {
+                                        if self.hoveredActivityIndex == index {
+                                            self.activityTooltip(for: item)
+                                                .offset(y: -48)
+                                                .zIndex(1)
+                                        }
+                                    }
 
                                 // Label (only for 7-day view)
                                 if self.chartDays == 7 {
@@ -229,6 +247,10 @@ struct StatsView: View {
                                         .font(.system(size: 9, weight: .medium))
                                         .foregroundStyle(.secondary)
                                 }
+                            }
+                            .contentShape(Rectangle())
+                            .onHover { hovering in
+                                self.hoveredActivityIndex = hovering ? index : nil
                             }
                         }
                     }
@@ -253,6 +275,33 @@ struct StatsView: View {
                 }
             }
         }
+    }
+
+    private func activityTooltip(for item: (date: Date, words: Int)) -> some View {
+        VStack(spacing: 2) {
+            Text(Self.activityTooltipDateFormatter.string(from: item.date))
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Text("\(self.formatNumber(item.words)) \(item.words == 1 ? "word" : "words")")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(self.theme.palette.cardBackground)
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(self.theme.palette.cardBorder.opacity(0.6), lineWidth: 1)
+        )
+        .fixedSize()
+        .allowsHitTesting(false)
     }
 
     // MARK: - Milestones Card

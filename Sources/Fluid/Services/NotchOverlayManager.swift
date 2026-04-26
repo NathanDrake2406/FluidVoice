@@ -179,6 +179,7 @@ final class NotchOverlayManager {
 
         // Start monitoring active app changes (updates icon in real-time)
         ActiveAppMonitor.shared.startMonitoring()
+        let targetScreen = OverlayScreenResolver.screenForCurrentPointer()
 
         // Route to bottom overlay if user preference is set
         if SettingsStore.shared.overlayPosition == .bottom {
@@ -187,7 +188,7 @@ final class NotchOverlayManager {
         }
 
         // Otherwise show notch overlay (original behavior)
-        self.showNotchOverlay(audioLevelPublisher: audioLevelPublisher, mode: mode)
+        self.showNotchOverlay(audioLevelPublisher: audioLevelPublisher, mode: mode, screen: targetScreen)
     }
 
     /// Show bottom overlay (alternative to notch)
@@ -205,12 +206,11 @@ final class NotchOverlayManager {
     }
 
     /// Show notch overlay (original behavior)
-    private func showNotchOverlay(audioLevelPublisher: AnyPublisher<CGFloat, Never>, mode: OverlayMode) {
-        let targetScreen = self.preferredPresentationScreen()
+    private func showNotchOverlay(audioLevelPublisher: AnyPublisher<CGFloat, Never>, mode: OverlayMode, screen: NSScreen?) {
+        let targetScreen = screen ?? self.preferredPresentationScreen()
         self.presentationPolicyScreen = targetScreen
         self.refreshNotchPresentationPolicy(for: targetScreen)
         self.currentAudioPublisher = audioLevelPublisher
-
         // Hide bottom overlay if it was visible
         if self.isBottomOverlayVisible {
             BottomOverlayWindowController.shared.hide()
@@ -451,7 +451,11 @@ final class NotchOverlayManager {
 
         self.commandOutputNotch = newNotch
 
-        await newNotch.expand()
+        if let screen = self.presentationPolicyScreen ?? OverlayScreenResolver.screenForCurrentPointer() {
+            await newNotch.expand(on: screen)
+        } else {
+            await newNotch.expand()
+        }
 
         guard self.commandOutputGeneration == currentGeneration else { return }
         self.commandOutputState = .visible
@@ -553,6 +557,10 @@ final class NotchOverlayManager {
     }
 
     var shouldSyncCommandConversationToNotch: Bool {
+        if SettingsStore.shared.overlayPosition == .bottom {
+            return true
+        }
+
         guard self.enableNotchFeatures else { return false }
 
         self.refreshNotchPresentationPolicy()

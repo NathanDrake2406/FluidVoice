@@ -106,7 +106,7 @@ final class ModelRepository {
         case "openai":
             return ("https://platform.openai.com/api-keys", "Get API Key")
         case "anthropic":
-            return ("https://console.anthropic.com/settings/keys", "Get API Key")
+            return ("https://platform.claude.com/settings/keys", "Get API Key")
         case "xai":
             return ("https://console.x.ai/", "Get API Key")
         case "groq":
@@ -118,7 +118,7 @@ final class ModelRepository {
         case "openrouter":
             return ("https://openrouter.ai/settings/keys", "Get API Key")
         case "ollama":
-            return ("https://github.com/ollama/ollama/blob/main/docs/openai.md", "Setup Guide")
+            return ("https://docs.ollama.com/api/openai-compatibility", "Setup Guide")
         case "lmstudio":
             return ("https://lmstudio.ai/docs/local-server", "Setup Guide")
         default:
