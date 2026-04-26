@@ -1350,6 +1350,22 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Internal presentation modes for the top notch overlay.
+    /// This is intentionally separate from bottom overlay sizing.
+    enum NotchPresentationMode: String, CaseIterable, Codable {
+        case standard
+        case minimal
+
+        var displayName: String {
+            switch self {
+            case .standard:
+                return "Standard Notch"
+            case .minimal:
+                return "Compact"
+            }
+        }
+    }
+
     /// Where the recording overlay appears (default: bottom)
     var overlayPosition: OverlayPosition {
         get {
@@ -1363,6 +1379,22 @@ final class SettingsStore: ObservableObject {
         set {
             objectWillChange.send()
             self.defaults.set(newValue.rawValue, forKey: Keys.overlayPosition)
+        }
+    }
+
+    /// Internal-only top notch presentation mode. No public settings UI yet.
+    var notchPresentationMode: NotchPresentationMode {
+        get {
+            guard let raw = self.defaults.string(forKey: Keys.notchPresentationMode),
+                  let mode = NotchPresentationMode(rawValue: raw)
+            else {
+                return .standard
+            }
+            return mode
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.notchPresentationMode)
         }
     }
 
@@ -2157,6 +2189,18 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Whether to show a native notification when AI post-processing fails and raw text is used
+    var notifyAIProcessingFailures: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.notifyAIProcessingFailures)
+            return value as? Bool ?? true
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.notifyAIProcessingFailures)
+        }
+    }
+
     func makeBackupPayload() -> SettingsBackupPayload {
         SettingsBackupPayload(
             selectedProviderID: self.selectedProviderID,
@@ -2206,6 +2250,7 @@ final class SettingsStore: ObservableObject {
             transcriptionPreviewCharLimit: self.transcriptionPreviewCharLimit,
             userTypingWPM: self.userTypingWPM,
             saveTranscriptionHistory: self.saveTranscriptionHistory,
+            notifyAIProcessingFailures: self.notifyAIProcessingFailures,
             weekendsDontBreakStreak: self.weekendsDontBreakStreak,
             fillerWords: self.fillerWords,
             removeFillerWordsEnabled: self.removeFillerWordsEnabled,
@@ -2275,6 +2320,9 @@ final class SettingsStore: ObservableObject {
         self.transcriptionPreviewCharLimit = payload.transcriptionPreviewCharLimit
         self.userTypingWPM = payload.userTypingWPM
         self.saveTranscriptionHistory = payload.saveTranscriptionHistory
+        if let notifyAIProcessingFailures = payload.notifyAIProcessingFailures {
+            self.notifyAIProcessingFailures = notifyAIProcessingFailures
+        }
         self.weekendsDontBreakStreak = payload.weekendsDontBreakStreak
         self.fillerWords = payload.fillerWords
         self.removeFillerWordsEnabled = payload.removeFillerWordsEnabled
@@ -3585,6 +3633,7 @@ private extension SettingsStore {
         // Stats Keys
         static let userTypingWPM = "UserTypingWPM"
         static let saveTranscriptionHistory = "SaveTranscriptionHistory"
+        static let notifyAIProcessingFailures = "NotifyAIProcessingFailures"
 
         // Filler Words
         static let fillerWords = "FillerWords"
@@ -3608,6 +3657,7 @@ private extension SettingsStore {
 
         // Overlay Position
         static let overlayPosition = "OverlayPosition"
+        static let notchPresentationMode = "NotchPresentationMode"
         static let overlayBottomOffset = "OverlayBottomOffset"
         static let overlayBottomOffsetMigratedTo50 = "OverlayBottomOffsetMigratedTo50"
         static let overlaySize = "OverlaySize"

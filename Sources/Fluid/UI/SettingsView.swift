@@ -817,6 +817,16 @@ struct SettingsView: View {
                                     Divider().opacity(0.2)
 
                                     self.optionToggleRow(
+                                        title: "Notify AI Cleanup Failures",
+                                        description: "Show a macOS notification when AI cleanup fails and raw transcription is typed.",
+                                        isOn: Binding(
+                                            get: { SettingsStore.shared.notifyAIProcessingFailures },
+                                            set: { SettingsStore.shared.notifyAIProcessingFailures = $0 }
+                                        )
+                                    )
+                                    Divider().opacity(0.2)
+
+                                    self.optionToggleRow(
                                         title: "Weekends Don't Break Streak",
                                         description: "Skip Saturday and Sunday when calculating usage streaks. Perfect for weekday-only users.",
                                         isOn: Binding(
@@ -1209,22 +1219,24 @@ struct SettingsView: View {
                                 }
                             }
 
-                            // Bottom overlay specific settings (only show when bottom is selected)
-                            if self.settings.overlayPosition == .bottom {
-                                Divider().padding(.vertical, 4)
+                            Divider().padding(.vertical, 4)
 
-                                // Overlay Size
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Overlay Size")
-                                            .font(.body)
-                                        Text("How large the recording indicator appears")
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-                                    }
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(self.settings.overlayPosition == .bottom ? "Overlay Size" : "Notch Style")
+                                        .font(.body)
+                                    Text(
+                                        self.settings.overlayPosition == .bottom
+                                            ? "How large the recording indicator appears"
+                                            : "Choose the regular notch or the compact layout"
+                                    )
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                }
 
-                                    Spacer()
+                                Spacer()
 
+                                if self.settings.overlayPosition == .bottom {
                                     Picker("", selection: self.$settings.overlaySize) {
                                         ForEach(SettingsStore.OverlaySize.allCases, id: \.self) { size in
                                             Text(size.displayName).tag(size)
@@ -1232,7 +1244,38 @@ struct SettingsView: View {
                                     }
                                     .pickerStyle(.menu)
                                     .frame(width: 170, alignment: .trailing)
+                                } else {
+                                    Picker("", selection: self.$settings.notchPresentationMode) {
+                                        ForEach(SettingsStore.NotchPresentationMode.allCases, id: \.self) { mode in
+                                            Text(mode.displayName).tag(mode)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .frame(width: 170, alignment: .trailing)
                                 }
+                            }
+
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Live Preview")
+                                        .font(.body)
+                                    Text("Show transcription text in the overlay while you speak")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer()
+
+                                Toggle("", isOn: self.$enableStreamingPreview)
+                                    .labelsHidden()
+                                    .onChange(of: self.enableStreamingPreview) { _, newValue in
+                                        SettingsStore.shared.enableStreamingPreview = newValue
+                                    }
+                            }
+
+                            // Bottom overlay specific settings (only show when bottom is selected)
+                            if self.settings.overlayPosition == .bottom {
+                                Divider().padding(.vertical, 4)
 
                                 // Bottom Offset
                                 HStack {

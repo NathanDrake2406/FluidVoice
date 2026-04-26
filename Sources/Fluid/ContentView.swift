@@ -254,6 +254,7 @@ struct ContentView: View {
                 let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
                 self.selectedSidebarItem = isOnboarded ? .preferences : .welcome
             }
+            self.handlePendingAppNavigation()
 
             // Reset auto-restart flag if permission was revoked (allows re-triggering if user re-grants)
             if !self.accessibilityEnabled {
@@ -313,27 +314,34 @@ struct ContentView: View {
 
             // Set up notch click callback for expanding command conversation
             NotchOverlayManager.shared.onNotchClicked = {
+                guard NotchOverlayManager.shared.canHandleNotchCommandTap else { return }
                 // When notch is clicked in command mode, show expanded conversation
-                if !NotchContentState.shared.commandConversationHistory.isEmpty {
+                if NotchOverlayManager.shared.canShowExpandedCommandOutput,
+                   !NotchContentState.shared.commandConversationHistory.isEmpty
+                {
                     NotchOverlayManager.shared.showExpandedCommandOutput()
                 }
             }
 
             // Set up command mode callbacks for notch
             NotchOverlayManager.shared.onCommandFollowUp = { [weak commandModeService] text in
+                guard NotchOverlayManager.shared.allowsCommandNotchActions else { return }
                 await commandModeService?.processFollowUpCommand(text)
             }
 
             // Chat management callbacks
             NotchOverlayManager.shared.onNewChat = { [weak commandModeService] in
+                guard NotchOverlayManager.shared.allowsCommandNotchActions else { return }
                 commandModeService?.createNewChat()
             }
 
             NotchOverlayManager.shared.onSwitchChat = { [weak commandModeService] chatID in
+                guard NotchOverlayManager.shared.allowsCommandNotchActions else { return }
                 commandModeService?.switchToChat(id: chatID)
             }
 
             NotchOverlayManager.shared.onClearChat = { [weak commandModeService] in
+                guard NotchOverlayManager.shared.allowsCommandNotchActions else { return }
                 commandModeService?.deleteCurrentChat()
             }
 
@@ -605,6 +613,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openCustomDictionaryFromVoiceEngine)) { _ in
             self.selectedSidebarItem = .customDictionary
         }
+        .onReceive(NotificationCenter.default.publisher(for: .appNavigationRequested)) { _ in
+            self.handlePendingAppNavigation()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .settingsBackupDidRestore)) { _ in
             self.reloadSettingsStateAfterBackupRestore()
         }
@@ -794,6 +805,15 @@ struct ContentView: View {
         switch destination {
         case .preferences:
             self.selectedSidebarItem = .preferences
+        }
+    }
+
+    private func handlePendingAppNavigation() {
+        guard let destination = AppNavigationRouter.shared.consumePendingDestination() else { return }
+
+        switch destination {
+        case .history:
+            self.selectedSidebarItem = .history
         }
     }
 
@@ -1764,12 +1784,12 @@ struct ContentView: View {
 
         self.clearActiveRecordingMode()
 
-        // Show "Transcribing..." state before calling stop() to keep overlay visible.
+        // Show "Transcribing" state before calling stop() to keep overlay visible.
         // The asr.stop() call performs the final transcription which can take a moment
         // (especially for slower models like Whisper Medium/Large).
         DebugLogger.shared.debug("Showing transcription processing state", source: "ContentView")
         self.menuBarManager.setProcessing(true)
-        NotchOverlayManager.shared.updateTranscriptionText("Transcribing...")
+        NotchOverlayManager.shared.updateTranscriptionText("Transcribing")
 
         // Give SwiftUI a chance to render the processing state before we do heavier work
         // (ASR finalization + optional AI post-processing).
@@ -1786,6 +1806,7 @@ struct ContentView: View {
             DebugLogger.shared.debug("Transcription returned empty text", source: "ContentView")
             // Hide processing state when returning early
             self.menuBarManager.setProcessing(false)
+            NotchOverlayManager.shared.hide()
             return
         }
 
@@ -1851,6 +1872,7 @@ struct ContentView: View {
         }
 
         var finalText: String
+        var aiFallbackReason: String?
 
         let shouldUseAI = activeDictationSlot.map { DictationAIPostProcessingGate.isConfigured(for: $0) } ??
             DictationAIPostProcessingGate.isConfigured()
@@ -1863,7 +1885,7 @@ struct ContentView: View {
             let postProcessingStart = Date()
 
             // Update overlay text to show we're now refining (processing already true)
-            NotchOverlayManager.shared.updateTranscriptionText("Refining...")
+            NotchOverlayManager.shared.updateTranscriptionText("Refining")
 
             // Ensure the status label becomes visible immediately.
             await Task.yield()
@@ -1881,6 +1903,8 @@ struct ContentView: View {
                     "AI post-processing failed, falling back to raw transcription: \(error.localizedDescription)",
                     source: "ContentView"
                 )
+                aiFallbackReason = error.localizedDescription
+                NotificationService.showAIProcessingFallback(error: error.localizedDescription)
                 finalText = transcribedText
             }
             let postProcessingLatencyMs = Int((Date().timeIntervalSince(postProcessingStart) * 1000).rounded())
@@ -1946,7 +1970,8 @@ struct ContentView: View {
                 rawText: transcribedText,
                 processedText: finalText,
                 appName: appInfo.name,
-                windowTitle: appInfo.windowTitle
+                windowTitle: appInfo.windowTitle,
+                aiProcessingError: aiFallbackReason
             )
         }
 
@@ -2022,6 +2047,10 @@ struct ContentView: View {
                     "method": AnalyticsOutputMethod.historyOnly.rawValue,
                 ]
             )
+        }
+
+        if !didTypeExternally {
+            NotchOverlayManager.shared.hide()
         }
     }
 
@@ -2156,6 +2185,7 @@ struct ContentView: View {
         await Task.yield()
 
         var finalText = transcribedText
+        var aiFallbackReason: String?
         let shouldUseAI = DictationAIPostProcessingGate.isConfigured()
         if shouldUseAI {
             do {
@@ -2165,6 +2195,8 @@ struct ContentView: View {
                     "AI reprocess failed, falling back to raw transcription: \(error.localizedDescription)",
                     source: "ContentView"
                 )
+                aiFallbackReason = error.localizedDescription
+                NotificationService.showAIProcessingFallback(error: error.localizedDescription)
                 finalText = transcribedText
             }
         }
@@ -2180,7 +2212,8 @@ struct ContentView: View {
                 rawText: transcribedText,
                 processedText: finalText,
                 appName: appInfo.name,
-                windowTitle: appInfo.windowTitle
+                windowTitle: appInfo.windowTitle,
+                aiProcessingError: aiFallbackReason
             )
         }
 

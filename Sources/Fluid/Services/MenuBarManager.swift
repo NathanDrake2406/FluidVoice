@@ -44,6 +44,8 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
     // Track pending overlay operations to prevent spam
     private var pendingShowOperation: DispatchWorkItem?
     private var pendingHideOperation: DispatchWorkItem?
+    private var pendingProcessingShowOperation: DispatchWorkItem?
+    private let processingVisualDelay: DispatchTimeInterval = .milliseconds(100)
 
     // Subscription for forwarding audio levels to expanded command notch
     private var expandedModeAudioSubscription: AnyCancellable?
@@ -87,9 +89,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] newText in
                 guard self != nil else { return }
-                // CRITICAL FIX: Check if streaming preview is enabled before updating notch
-                // The "Show Live Preview" toggle in Preferences should control this behavior
-                if SettingsStore.shared.enableStreamingPreview {
+                if NotchOverlayManager.shared.shouldShowOrTrackLivePreviewText {
                     NotchOverlayManager.shared.updateTranscriptionText(newText)
                 }
             }
@@ -107,7 +107,6 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         // Prevent rapid state changes that could cause cycles
         guard self.overlayVisible != isRunning else { return }
 
-        let delay: DispatchTimeInterval = .milliseconds(30)
         if isRunning {
             // Cancel any pending hide operation
             self.pendingHideOperation?.cancel()
@@ -119,7 +118,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
             if NotchOverlayManager.shared.isCommandOutputExpanded {
                 // Only keep expanded notch if this is a command mode recording (follow-up)
                 // For other modes (dictation, rewrite), close it and show regular notch
-                if self.currentOverlayMode == .command {
+                if self.currentOverlayMode == .command, NotchOverlayManager.shared.supportsCommandNotchUI {
                     // Enable recording visualization in the expanded notch
                     NotchContentState.shared.setRecordingInExpandedMode(true)
 
@@ -143,7 +142,10 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
 
                 // Double-check expanded notch isn't showing (could have changed during delay)
                 // But only block if we're in command mode
-                if NotchOverlayManager.shared.isCommandOutputExpanded && self.currentOverlayMode == .command {
+                if NotchOverlayManager.shared.isCommandOutputExpanded,
+                   self.currentOverlayMode == .command,
+                   NotchOverlayManager.shared.supportsCommandNotchUI
+                {
                     self.pendingShowOperation = nil
                     return
                 }
@@ -157,7 +159,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
                 self.pendingShowOperation = nil
             }
             self.pendingShowOperation = showItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: showItem)
+            DispatchQueue.main.async(execute: showItem)
         } else {
             // Cancel any pending show operation
             self.pendingShowOperation?.cancel()
@@ -191,7 +193,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
                 self.pendingHideOperation = nil
             }
             self.pendingHideOperation = hideItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: hideItem)
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(30), execute: hideItem)
         }
     }
 
@@ -211,11 +213,22 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         self.isProcessingActive = processing
 
         if processing {
+            self.pendingProcessingShowOperation?.cancel()
             // Cancel any pending hide - we want to keep the overlay visible for AI processing
             self.pendingHideOperation?.cancel()
             self.pendingHideOperation = nil
             self.overlayVisible = true
+
+            let showItem = DispatchWorkItem { [weak self] in
+                guard let self = self, self.isProcessingActive else { return }
+                NotchOverlayManager.shared.setProcessing(true)
+                self.pendingProcessingShowOperation = nil
+            }
+            self.pendingProcessingShowOperation = showItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.processingVisualDelay, execute: showItem)
         } else {
+            self.pendingProcessingShowOperation?.cancel()
+            self.pendingProcessingShowOperation = nil
             // When processing ends, schedule the hide (unless expanded output is showing)
             self.overlayVisible = false
 
@@ -240,8 +253,9 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
             }
             self.pendingHideOperation = hideItem
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100), execute: hideItem)
+            NotchOverlayManager.shared.setProcessing(false)
+            return
         }
-        NotchOverlayManager.shared.setProcessing(processing)
     }
 
     private func setupMenuBarSafely() {
