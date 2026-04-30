@@ -1265,7 +1265,10 @@ final class SettingsStore: ObservableObject {
             let value = self.defaults.object(forKey: Keys.enableStreamingPreview)
             return value as? Bool ?? true // Default to true (enabled)
         }
-        set { self.defaults.set(newValue, forKey: Keys.enableStreamingPreview) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.enableStreamingPreview)
+        }
     }
 
     var enableAIStreaming: Bool {

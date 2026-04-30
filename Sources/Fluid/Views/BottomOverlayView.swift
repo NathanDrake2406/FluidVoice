@@ -2022,6 +2022,15 @@ struct BottomOverlayView: View {
         self.layout.usesFixedCanvas ? self.layout.previewBoxHeight : self.layout.transFontSize * 4.2
     }
 
+    private var shouldReservePreviewArea: Bool {
+        self.layout.showsPreview && self.settings.enableStreamingPreview
+    }
+
+    private var overlayFrameHeight: CGFloat? {
+        guard self.layout.usesFixedCanvas else { return nil }
+        return self.shouldReservePreviewArea ? self.layout.overlayHeight : nil
+    }
+
     private var previewMaxWidth: CGFloat {
         if self.layout.usesFixedCanvas {
             return self.layout.waveformWidth * 2.2
@@ -2031,6 +2040,7 @@ struct BottomOverlayView: View {
     }
 
     private var dynamicPreviewBaseMinHeight: CGFloat {
+        guard self.shouldReservePreviewArea else { return 0 }
         let verticalPadding = self.settings.overlaySize == .small
             ? max(2, self.transcriptionVerticalPadding - 1)
             : self.transcriptionVerticalPadding
@@ -2052,11 +2062,12 @@ struct BottomOverlayView: View {
     }
 
     private var currentPreviewSizingText: String {
-        self.shouldShowProcessingStatus ? self.processingStatusText : self.transcriptionPreviewText
+        guard self.shouldReservePreviewArea else { return "" }
+        return self.shouldShowProcessingStatus ? self.processingStatusText : self.transcriptionPreviewText
     }
 
     private var shouldShowProcessingStatus: Bool {
-        self.contentState.isProcessing && self.processingStatusVisible
+        self.shouldReservePreviewArea && self.contentState.isProcessing && self.processingStatusVisible
     }
 
     private var shouldSuppressPreviewDuringRelease: Bool {
@@ -2064,6 +2075,7 @@ struct BottomOverlayView: View {
     }
 
     private func previewResizeBucket(for previewText: String) -> Int {
+        guard self.shouldReservePreviewArea else { return 0 }
         let trimmed = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return self.shouldShowProcessingStatus ? 1 : 0 }
 
@@ -2080,7 +2092,7 @@ struct BottomOverlayView: View {
     }
 
     private func refreshDynamicPreviewSizeIfNeeded(for previewText: String) {
-        guard self.layout.showsPreview else { return }
+        guard self.shouldReservePreviewArea else { return }
         guard !self.layout.usesFixedCanvas else { return }
         let nextBucket = self.previewResizeBucket(for: previewText)
         guard nextBucket != self.dynamicPreviewResizeBucket else { return }
@@ -2478,20 +2490,22 @@ struct BottomOverlayView: View {
             }
 
             VStack(spacing: self.layout.vPadding / 2) {
-                if self.layout.showsPreview {
+                if self.shouldReservePreviewArea {
                     if self.layout.usesFixedCanvas {
                         // Transcription text area (fixed-height in large mode)
                         Group {
                             if self.shouldSuppressPreviewDuringRelease {
                                 Color.clear
                             } else if self.shouldShowProcessingStatus {
-                                ShimmerText(
-                                    text: self.processingStatusText,
-                                    color: self.modeColor,
-                                    font: .system(size: self.layout.transFontSize, weight: .medium)
-                                )
-                                .id(self.processingStatusCycleID)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                                // Temporarily hidden; the waveform sweep carries processing state.
+                                // ShimmerText(
+                                //     text: self.processingStatusText,
+                                //     color: self.modeColor,
+                                //     font: .system(size: self.layout.transFontSize, weight: .medium)
+                                // )
+                                // .id(self.processingStatusCycleID)
+                                // .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                                Color.clear
                             } else if self.contentState.isProcessing {
                                 Color.clear
                             } else if self.hasTranscription {
@@ -2563,12 +2577,14 @@ struct BottomOverlayView: View {
                                     }
                                 }
                             } else if self.shouldShowProcessingStatus {
-                                ShimmerText(
-                                    text: self.processingStatusText,
-                                    color: self.modeColor,
-                                    font: .system(size: self.layout.transFontSize, weight: .medium)
-                                )
-                                .id(self.processingStatusCycleID)
+                                // Temporarily hidden; the waveform sweep carries processing state.
+                                // ShimmerText(
+                                //     text: self.processingStatusText,
+                                //     color: self.modeColor,
+                                //     font: .system(size: self.layout.transFontSize, weight: .medium)
+                                // )
+                                // .id(self.processingStatusCycleID)
+                                Color.clear
                             } else if self.contentState.isProcessing {
                                 Color.clear
                             } else {
@@ -2674,7 +2690,7 @@ struct BottomOverlayView: View {
         }
         .frame(
             width: self.layout.usesFixedCanvas ? self.layout.overlayWidth : self.layout.containerWidth,
-            height: self.layout.usesFixedCanvas ? self.layout.overlayHeight : nil,
+            height: self.overlayFrameHeight,
             alignment: .top
         )
         .frame(maxHeight: .infinity, alignment: .top)
@@ -2683,6 +2699,11 @@ struct BottomOverlayView: View {
         .opacity(self.overlayAnimatedOpacity)
         .animation(.timingCurve(0.22, 0.0, 0.2, 1.0, duration: 0.28), value: self.contentState.isBottomOverlayDismissing)
         .onChange(of: self.settings.overlaySize) { _, _ in
+            self.dynamicPreviewResizeBucket = self.previewResizeBucket(for: self.currentPreviewSizingText)
+            self.frozenDynamicPreviewHeight = nil
+            BottomOverlayWindowController.shared.refreshSizeForContent()
+        }
+        .onChange(of: self.settings.enableStreamingPreview) { _, _ in
             self.dynamicPreviewResizeBucket = self.previewResizeBucket(for: self.currentPreviewSizingText)
             self.frozenDynamicPreviewHeight = nil
             BottomOverlayWindowController.shared.refreshSizeForContent()
@@ -2731,6 +2752,10 @@ struct BottomOverlayView: View {
             self.refreshDynamicPreviewSizeIfNeeded(for: self.currentPreviewSizingText)
         }
         .onChange(of: self.contentState.isBottomOverlayReleaseTransitioning) { _, transitioning in
+            guard self.shouldReservePreviewArea else {
+                self.frozenDynamicPreviewHeight = nil
+                return
+            }
             guard !self.layout.usesFixedCanvas else { return }
             if transitioning {
                 let measuredHeight = self.dynamicPreviewMeasuredHeight > 0
@@ -2808,25 +2833,29 @@ struct BottomWaveformView: View {
         !self.layout.showsModeLabel
     }
 
+    private var isProcessingVisualActive: Bool {
+        self.contentState.isProcessing || self.isReleaseAnimationActive
+    }
+
     private var currentGlowIntensity: CGFloat {
         if self.isPillStyle {
             return 0.0
         }
-        return self.contentState.isProcessing ? 0.0 : 0.5
+        return self.isProcessingVisualActive ? 0.0 : 0.5
     }
 
     private var currentGlowRadius: CGFloat {
         if self.isPillStyle {
             return 0.0
         }
-        return self.contentState.isProcessing ? 0.0 : 4
+        return self.isProcessingVisualActive ? 0.0 : 4
     }
 
     private var barFillColor: Color {
         if self.isPillStyle {
-            return Color.white.opacity(self.contentState.isProcessing ? 0.28 : 0.62)
+            return Color.white.opacity(self.isProcessingVisualActive ? 0.28 : 0.62)
         }
-        return self.color.opacity(self.contentState.isProcessing ? 0.16 : 1.0)
+        return self.color.opacity(self.isProcessingVisualActive ? 0.16 : 1.0)
     }
 
     private var isReleaseAnimationActive: Bool {
@@ -2846,7 +2875,7 @@ struct BottomWaveformView: View {
             self.barsView
                 .foregroundStyle(self.barFillColor)
 
-            if self.contentState.isProcessing {
+            if self.isProcessingVisualActive {
                 CompositorShimmerSweep(duration: 1.05, peakOpacity: 0.9)
                     .mask {
                         self.barsView
@@ -2913,25 +2942,17 @@ struct BottomWaveformView: View {
     }
 
     private func displayHeight(at index: Int) -> CGFloat {
-        if self.isPillStyle, self.isReleaseAnimationActive || self.contentState.isProcessing {
-            return self.minHeight
-        }
-
         if self.isReleaseAnimationActive || self.contentState.isProcessing {
             return self.minHeight
         }
         return self.safeBarHeight(at: index)
     }
 
-    private func pillPeakHeight(at index: Int) -> CGFloat {
-        let pattern: [CGFloat] = [0.12, 0.45, 0.76, 0.93, 0.93, 0.76, 0.45, 0.18]
-        let factor: CGFloat
-        if index < pattern.count {
-            factor = pattern[index]
-        } else {
-            let centerDistance = abs(CGFloat(index) - CGFloat(self.barCount - 1) / 2)
-            factor = max(0.16, 0.94 - centerDistance * 0.22)
-        }
+    private func visualizerPeakHeight(at index: Int) -> CGFloat {
+        let centerDistance = abs(CGFloat(index) - CGFloat(self.barCount - 1) / 2)
+        let maxDistance = max(CGFloat(self.barCount - 1) / 2, 1)
+        let normalizedDistance = min(centerDistance / maxDistance, 1)
+        let factor = max(0.18, 0.96 - normalizedDistance * 0.78)
         return self.minHeight + (self.maxHeight - self.minHeight) * factor
     }
 
@@ -2951,45 +2972,6 @@ struct BottomWaveformView: View {
         // Ensure array is properly sized before modifying
         guard self.barHeights.count >= self.barCount else { return }
 
-        if self.isPillStyle {
-            self.updatePillBars(level: level)
-            return
-        }
-
-        let normalizedLevel = min(max(level, 0), 1)
-        let isActive = normalizedLevel > self.noiseThreshold // Use user's sensitivity setting
-
-        guard isActive, self.noiseThreshold < 1.0 else {
-            if self.barHeights.prefix(self.barCount).allSatisfy({ abs($0 - self.minHeight) < 0.5 }) {
-                return
-            }
-
-            withAnimation(.easeOut(duration: 0.1)) {
-                for i in 0..<self.barCount {
-                    self.barHeights[i] = self.minHeight
-                }
-            }
-            return
-        }
-
-        withAnimation(.easeOut(duration: 0.06)) {
-            for i in 0..<self.barCount {
-                let centerDistance = abs(CGFloat(i) - CGFloat(self.barCount - 1) / 2)
-                let centerFactor = 1.0 - (centerDistance / CGFloat(self.barCount / 2)) * 0.3
-
-                // Amplify the level for more dramatic response
-                // Safety check: ensure denominator is never zero
-                let denominator = max(1.0 - self.noiseThreshold, 0.001)
-                let adjustedLevel = max(min((normalizedLevel - self.noiseThreshold) / denominator, 1.0), 0.0)
-
-                let amplifiedLevel = pow(adjustedLevel, 0.6) // More responsive to quieter sounds
-                let barVariation = 0.88 + 0.12 * cos(CGFloat(i) * 1.7)
-                self.barHeights[i] = self.minHeight + (self.maxHeight - self.minHeight) * amplifiedLevel * centerFactor * barVariation
-            }
-        }
-    }
-
-    private func updatePillBars(level: CGFloat) {
         let normalizedLevel = min(max(level, 0), 1)
         let denominator = max(1.0 - self.noiseThreshold, 0.001)
         let adjustedLevel = max(min((normalizedLevel - self.noiseThreshold) / denominator, 1.0), 0.0)
@@ -2997,7 +2979,7 @@ struct BottomWaveformView: View {
 
         withAnimation(.easeOut(duration: 0.08)) {
             for i in 0..<self.barCount {
-                let peakHeight = self.pillPeakHeight(at: i)
+                let peakHeight = self.visualizerPeakHeight(at: i)
                 let variation = 0.92 + 0.08 * cos(CGFloat(i) * 1.45)
                 let nextHeight = self.minHeight + (peakHeight - self.minHeight) * amplifiedLevel * variation
                 self.barHeights[i] = min(self.maxHeight, max(self.minHeight, nextHeight))
