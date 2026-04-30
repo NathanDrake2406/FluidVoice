@@ -936,6 +936,10 @@ final class ASRService: ObservableObject {
                 "stop(): no audio captured, skipping transcription",
                 source: "ASRService"
             )
+            DebugLogger.shared.info(
+                "Final ASR result | provider=\(self.transcriptionProvider.name) | samples=0 | textChars=0 | confidence=nil | reason=no_audio",
+                source: "ASRService"
+            )
             if shouldResumeMedia {
                 await MediaPlaybackService.shared.resumeIfWePaused(true)
                 DebugLogger.shared.info("🎵 Resumed system media after empty audio", source: "ASRService")
@@ -986,6 +990,10 @@ final class ASRService: ObservableObject {
             DebugLogger.shared.debug("stop(): full transcription finished", source: "ASRService")
             DebugLogger.shared.debug(
                 "Transcription completed: '\(result.text)' (confidence: \(result.confidence))",
+                source: "ASRService"
+            )
+            DebugLogger.shared.info(
+                "Final ASR result | provider=\(self.transcriptionProvider.name) | samples=\(pcm.count) | textChars=\(result.text.trimmingCharacters(in: .whitespacesAndNewlines).count) | confidence=\(result.confidence)",
                 source: "ASRService"
             )
 

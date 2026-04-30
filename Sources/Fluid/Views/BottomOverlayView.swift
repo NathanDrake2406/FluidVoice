@@ -31,9 +31,12 @@ final class BottomOverlayWindowController {
     private var window: NSPanel?
     private var audioSubscription: AnyCancellable?
     private var pendingResizeWorkItem: DispatchWorkItem?
+    private var pendingReleaseTransitionResetWorkItem: DispatchWorkItem?
     private var localMouseDownMonitor: Any?
     private var globalMouseDownMonitor: Any?
     private var targetScreen: NSScreen?
+    private var releaseTransitionActiveUntil: Date?
+    private var deferredResizePending = false
 
     private init() {
         NotificationCenter.default.addObserver(forName: NSNotification.Name("OverlayOffsetChanged"), object: nil, queue: .main) { [weak self] _ in
@@ -49,6 +52,7 @@ final class BottomOverlayWindowController {
     }
 
     func show(audioPublisher: AnyPublisher<CGFloat, Never>, mode: OverlayMode) {
+        self.endReleaseTransition(flushDeferredUpdate: false)
         self.pendingResizeWorkItem?.cancel()
         self.pendingResizeWorkItem = nil
         BottomOverlayPromptMenuController.shared.hide()
@@ -65,6 +69,8 @@ final class BottomOverlayWindowController {
         }
         NotchContentState.shared.updateTranscription("")
         NotchContentState.shared.bottomOverlayAudioLevel = 0
+        NotchContentState.shared.setBottomOverlayDismissOffsetY(8)
+        NotchContentState.shared.setBottomOverlayDismissing(false)
 
         // Subscribe to audio levels and route through NotchContentState
         self.audioSubscription?.cancel()
@@ -99,6 +105,7 @@ final class BottomOverlayWindowController {
         self.audioSubscription = nil
         self.pendingResizeWorkItem?.cancel()
         self.pendingResizeWorkItem = nil
+        self.pendingReleaseTransitionResetWorkItem?.cancel()
         self.targetScreen = nil
         self.removeMouseDownMonitors()
         BottomOverlayPromptMenuController.shared.hide()
@@ -110,7 +117,11 @@ final class BottomOverlayWindowController {
         NotchContentState.shared.bottomOverlayAudioLevel = 0
         NotchContentState.shared.targetAppIcon = nil
 
-        guard let window = window else { return }
+        guard let window = window else {
+            self.endReleaseTransition(flushDeferredUpdate: false)
+            NotchContentState.shared.setBottomOverlayDismissing(false)
+            return
+        }
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
@@ -118,6 +129,10 @@ final class BottomOverlayWindowController {
             window.animator().alphaValue = 0
         } completionHandler: {
             window.orderOut(nil)
+            Task { @MainActor in
+                self.endReleaseTransition(flushDeferredUpdate: false)
+                NotchContentState.shared.setBottomOverlayDismissing(false)
+            }
         }
     }
 
@@ -129,7 +144,52 @@ final class BottomOverlayWindowController {
         self.scheduleSizeAndPositionUpdate()
     }
 
-    private func scheduleSizeAndPositionUpdate(after delay: TimeInterval = 0.03) {
+    func beginReleaseTransition(duration: TimeInterval = 0.28) {
+        let now = Date()
+        let deadline = now.addingTimeInterval(max(duration, 0.12))
+        if let existingDeadline = self.releaseTransitionActiveUntil, existingDeadline > deadline {
+            self.releaseTransitionActiveUntil = existingDeadline
+        } else {
+            self.releaseTransitionActiveUntil = deadline
+        }
+
+        self.pendingReleaseTransitionResetWorkItem?.cancel()
+
+        guard let activeDeadline = self.releaseTransitionActiveUntil else { return }
+        let resetWorkItem = DispatchWorkItem { [weak self] in
+            self?.endReleaseTransition()
+        }
+        self.pendingReleaseTransitionResetWorkItem = resetWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(activeDeadline.timeIntervalSince(now), 0), execute: resetWorkItem)
+
+        self.audioSubscription?.cancel()
+        self.audioSubscription = nil
+        NotchContentState.shared.bottomOverlayAudioLevel = 0
+        NotchContentState.shared.setBottomOverlayReleaseTransitioning(true)
+        NotchContentState.shared.setBottomOverlayDismissOffsetY(28)
+        NotchContentState.shared.setBottomOverlayDismissing(true)
+    }
+
+    func endReleaseTransition(flushDeferredUpdate: Bool = true) {
+        self.pendingReleaseTransitionResetWorkItem?.cancel()
+        self.pendingReleaseTransitionResetWorkItem = nil
+        self.releaseTransitionActiveUntil = nil
+        NotchContentState.shared.setBottomOverlayReleaseTransitioning(false)
+
+        let shouldFlush = flushDeferredUpdate && self.deferredResizePending
+        self.deferredResizePending = false
+
+        if shouldFlush, self.window?.isVisible == true {
+            self.scheduleSizeAndPositionUpdate(after: 0)
+        }
+    }
+
+    private func scheduleSizeAndPositionUpdate(after delay: TimeInterval = 0.08) {
+        if self.isReleaseTransitionActive {
+            self.deferredResizePending = true
+            return
+        }
+
         self.pendingResizeWorkItem?.cancel()
 
         // Debounce rapid streaming updates to avoid resize thrash.
@@ -142,6 +202,11 @@ final class BottomOverlayWindowController {
 
     /// Update window size based on current SwiftUI content and re-position
     private func updateSizeAndPosition() {
+        if self.isReleaseTransitionActive {
+            self.deferredResizePending = true
+            return
+        }
+
         guard let window = window, let hostingView = window.contentView as? NSHostingView<BottomOverlayView> else { return }
 
         // Re-calculate fitting size for the new layout constants
@@ -181,6 +246,7 @@ final class BottomOverlayWindowController {
         panel.hasShadow = false // SwiftUI handles shadow
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
+        panel.animationBehavior = .none
 
         let contentView = BottomOverlayView()
         let hostingView = NSHostingView(rootView: contentView)
@@ -197,6 +263,16 @@ final class BottomOverlayWindowController {
         panel.contentView = hostingView
 
         self.window = panel
+    }
+
+    private var isReleaseTransitionActive: Bool {
+        guard let deadline = self.releaseTransitionActiveUntil else { return false }
+        if deadline > Date() {
+            return true
+        }
+
+        self.releaseTransitionActiveUntil = nil
+        return false
     }
 
     private func ensureMouseDownMonitors() {
@@ -1615,6 +1691,17 @@ private struct PromptSelectorAnchorReader: NSViewRepresentable {
     }
 }
 
+private struct DynamicPreviewHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        let next = nextValue()
+        if next > 0 {
+            value = next
+        }
+    }
+}
+
 // MARK: - Bottom Overlay SwiftUI View
 
 struct BottomOverlayView: View {
@@ -1634,6 +1721,11 @@ struct BottomOverlayView: View {
     @State private var promptSelectorWindow: NSWindow?
     @State private var actionsSelectorFrameInScreen: CGRect = .zero
     @State private var actionsSelectorWindow: NSWindow?
+    @State private var dynamicPreviewMeasuredHeight: CGFloat = 0
+    @State private var frozenDynamicPreviewHeight: CGFloat?
+    @State private var dynamicPreviewResizeBucket: Int = 0
+    @State private var processingStatusVisible = false
+    @State private var processingStatusCycleID = 0
 
     struct LayoutConstants {
         let hPadding: CGFloat
@@ -1898,7 +1990,68 @@ struct BottomOverlayView: View {
     }
 
     private var previewMaxWidth: CGFloat {
-        self.layout.waveformWidth * 2.2
+        if self.layout.usesFixedCanvas {
+            return self.layout.waveformWidth * 2.2
+        }
+
+        return max(self.layout.waveformWidth * 2.2, self.layout.containerWidth - self.layout.hPadding * 2)
+    }
+
+    private var dynamicPreviewBaseMinHeight: CGFloat {
+        let verticalPadding = self.settings.overlaySize == .small
+            ? max(2, self.transcriptionVerticalPadding - 1)
+            : self.transcriptionVerticalPadding
+        return self.estimatedPreviewLineHeight + verticalPadding * 2
+    }
+
+    private var effectiveDynamicPreviewLockedHeight: CGFloat? {
+        guard self.contentState.isBottomOverlayReleaseTransitioning else { return nil }
+        guard let frozenDynamicPreviewHeight else { return nil }
+        return max(frozenDynamicPreviewHeight, self.dynamicPreviewBaseMinHeight)
+    }
+
+    private var effectiveDynamicPreviewMinHeight: CGFloat {
+        self.effectiveDynamicPreviewLockedHeight ?? self.dynamicPreviewBaseMinHeight
+    }
+
+    private var estimatedPreviewLineHeight: CGFloat {
+        max(self.layout.transFontSize * 1.25, self.layout.transFontSize + 2)
+    }
+
+    private var currentPreviewSizingText: String {
+        self.shouldShowProcessingStatus ? self.processingStatusText : self.transcriptionPreviewText
+    }
+
+    private var shouldShowProcessingStatus: Bool {
+        self.contentState.isProcessing && self.processingStatusVisible
+    }
+
+    private var shouldSuppressPreviewDuringRelease: Bool {
+        self.contentState.isBottomOverlayReleaseTransitioning || self.contentState.isBottomOverlayDismissing
+    }
+
+    private func previewResizeBucket(for previewText: String) -> Int {
+        let trimmed = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return self.shouldShowProcessingStatus ? 1 : 0 }
+
+        if self.settings.overlaySize == .small {
+            return 1
+        }
+
+        let newlineCount = trimmed.filter { $0 == "\n" }.count
+        let estimatedCharacterWidth = max(self.layout.transFontSize * 0.56, 1)
+        let characterCapacity = max(Int((self.previewMaxWidth / estimatedCharacterWidth).rounded(.down)), 12)
+        let estimatedWrappedLines = max(1, (trimmed.count + characterCapacity - 1) / characterCapacity)
+        let maxVisibleLines = max(Int((self.previewMaxHeight / max(self.estimatedPreviewLineHeight, 1)).rounded(.down)), 1)
+        return min(max(estimatedWrappedLines + newlineCount, 1), maxVisibleLines)
+    }
+
+    private func refreshDynamicPreviewSizeIfNeeded(for previewText: String) {
+        guard !self.layout.usesFixedCanvas else { return }
+        let nextBucket = self.previewResizeBucket(for: previewText)
+        guard nextBucket != self.dynamicPreviewResizeBucket else { return }
+        self.dynamicPreviewResizeBucket = nextBucket
+        BottomOverlayWindowController.shared.refreshSizeForContent()
     }
 
     private var transcriptionVerticalPadding: CGFloat {
@@ -1922,6 +2075,21 @@ struct BottomOverlayView: View {
 
     private var overlayBorderBottomOpacity: Double {
         self.settings.overlaySize == .large ? 0.05 : 0.08
+    }
+
+    private var overlayAnimatedOffsetY: CGFloat {
+        if self.contentState.isBottomOverlayDismissing {
+            return self.contentState.bottomOverlayDismissOffsetY
+        }
+        return 0
+    }
+
+    private var overlayAnimatedScale: CGFloat {
+        self.contentState.isBottomOverlayDismissing ? 0.97 : 1.0
+    }
+
+    private var overlayAnimatedOpacity: Double {
+        self.contentState.isBottomOverlayDismissing ? 0.08 : 1.0
     }
 
     private func chipBackground(isHovered: Bool, disabled: Bool) -> some View {
@@ -2275,13 +2443,18 @@ struct BottomOverlayView: View {
                     if self.layout.usesFixedCanvas {
                         // Transcription text area (fixed-height in large mode)
                         Group {
-                            if self.contentState.isProcessing {
+                            if self.shouldSuppressPreviewDuringRelease {
+                                Color.clear
+                            } else if self.shouldShowProcessingStatus {
                                 ShimmerText(
                                     text: self.processingStatusText,
                                     color: self.modeColor,
                                     font: .system(size: self.layout.transFontSize, weight: .medium)
                                 )
+                                .id(self.processingStatusCycleID)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                            } else if self.contentState.isProcessing {
+                                Color.clear
                             } else if self.hasTranscription {
                                 let previewText = self.transcriptionPreviewText
                                 if !previewText.isEmpty {
@@ -2324,7 +2497,9 @@ struct BottomOverlayView: View {
                     } else {
                         // Original dynamic preview behavior for small/medium
                         Group {
-                            if self.hasTranscription && !self.contentState.isProcessing {
+                            if self.shouldSuppressPreviewDuringRelease {
+                                Color.clear
+                            } else if self.hasTranscription && !self.contentState.isProcessing {
                                 let previewText = self.transcriptionPreviewText
                                 if !previewText.isEmpty {
                                     if self.settings.overlaySize == .small {
@@ -2337,45 +2512,40 @@ struct BottomOverlayView: View {
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                             .padding(.vertical, max(2, self.transcriptionVerticalPadding - 1))
                                     } else {
-                                        ScrollViewReader { proxy in
-                                            ScrollView(.vertical, showsIndicators: false) {
-                                                Text(previewText)
-                                                    .font(.system(size: self.layout.transFontSize, weight: .medium))
-                                                    .foregroundStyle(.white.opacity(0.9))
-                                                    .multilineTextAlignment(.leading)
-                                                    .lineLimit(nil)
-                                                    .fixedSize(horizontal: false, vertical: true)
-                                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                                Color.clear.frame(height: 1).id("bottom")
-                                            }
-                                            .frame(width: self.previewMaxWidth)
-                                            .frame(maxHeight: self.previewMaxHeight)
-                                            .clipped()
-                                            .onAppear {
-                                                DispatchQueue.main.async {
-                                                    proxy.scrollTo("bottom", anchor: .bottom)
-                                                }
-                                            }
-                                            .onChange(of: previewText) { _, _ in
-                                                DispatchQueue.main.async {
-                                                    proxy.scrollTo("bottom", anchor: .bottom)
-                                                }
-                                            }
-                                        }
-                                        .padding(.vertical, self.transcriptionVerticalPadding)
+                                        Text(previewText)
+                                            .font(.system(size: self.layout.transFontSize, weight: .medium))
+                                            .foregroundStyle(.white.opacity(0.9))
+                                            .multilineTextAlignment(.leading)
+                                            .lineLimit(Int(self.previewMaxHeight / max(self.estimatedPreviewLineHeight, 1)))
+                                            .truncationMode(.head)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .frame(width: self.previewMaxWidth, alignment: .leading)
+                                            .padding(.vertical, self.transcriptionVerticalPadding)
                                     }
                                 }
-                            } else if self.contentState.isProcessing {
+                            } else if self.shouldShowProcessingStatus {
                                 ShimmerText(
                                     text: self.processingStatusText,
                                     color: self.modeColor,
                                     font: .system(size: self.layout.transFontSize, weight: .medium)
                                 )
+                                .id(self.processingStatusCycleID)
+                            } else if self.contentState.isProcessing {
+                                Color.clear
+                            } else {
+                                Color.clear
                             }
                         }
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear
+                                    .preference(key: DynamicPreviewHeightPreferenceKey.self, value: proxy.size.height)
+                            }
+                        )
                         .frame(
                             maxWidth: self.previewMaxWidth,
-                            minHeight: self.hasTranscription || self.contentState.isProcessing ? self.layout.transFontSize * 1.5 : 0
+                            minHeight: self.effectiveDynamicPreviewMinHeight,
+                            maxHeight: self.effectiveDynamicPreviewLockedHeight
                         )
                     }
                 }
@@ -2384,27 +2554,23 @@ struct BottomOverlayView: View {
                 HStack(spacing: self.layout.hPadding / 1.5) {
                     // Target app icon (the app where text will be typed)
                     let appIcon = self.contentState.targetAppIcon ?? self.activeAppMonitor.activeAppIcon
-                    if appIcon != nil || !self.appServices.asr.isAsrReady &&
+                    let showModelLoading = !self.appServices.asr.isAsrReady &&
                         (self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel)
-                    {
-                        let showModelLoading = !self.appServices.asr.isAsrReady &&
-                            (self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel)
-                        VStack(spacing: 2) {
-                            if showModelLoading {
-                                ProgressView()
-                                    .controlSize(.mini)
-                            }
-                            if let appIcon = appIcon {
-                                Image(nsImage: appIcon)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fit)
-                                    .frame(width: self.layout.iconSize, height: self.layout.iconSize)
-                                    .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize / 4))
-                            }
+                    VStack(spacing: 2) {
+                        if showModelLoading {
+                            ProgressView()
+                                .controlSize(.mini)
                         }
-                        .frame(width: self.layout.iconSize, height: self.layout.iconSize)
-                        .opacity((appIcon != nil || self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel) ? 1 : 0)
+                        if let appIcon = appIcon {
+                            Image(nsImage: appIcon)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+                                .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize / 4))
+                        }
                     }
+                    .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+                    .opacity((appIcon != nil || showModelLoading) ? 1 : 0)
 
                     // Waveform visualization
                     BottomWaveformView(color: self.modeColor, layout: self.layout)
@@ -2455,19 +2621,29 @@ struct BottomOverlayView: View {
                 }
             )
             .frame(maxWidth: .infinity, alignment: .top)
+            .transaction { transaction in
+                if self.shouldSuppressPreviewDuringRelease {
+                    transaction.animation = nil
+                }
+            }
         }
         .frame(
             width: self.layout.usesFixedCanvas ? self.layout.overlayWidth : self.layout.containerWidth,
             height: self.layout.usesFixedCanvas ? self.layout.overlayHeight : nil,
             alignment: .top
         )
+        .frame(maxHeight: .infinity, alignment: .top)
+        .scaleEffect(self.overlayAnimatedScale, anchor: .center)
+        .offset(y: self.overlayAnimatedOffsetY)
+        .opacity(self.overlayAnimatedOpacity)
+        .animation(.timingCurve(0.22, 0.0, 0.2, 1.0, duration: 0.28), value: self.contentState.isBottomOverlayDismissing)
         .onChange(of: self.settings.overlaySize) { _, _ in
+            self.dynamicPreviewResizeBucket = self.previewResizeBucket(for: self.currentPreviewSizingText)
+            self.frozenDynamicPreviewHeight = nil
             BottomOverlayWindowController.shared.refreshSizeForContent()
         }
         .onChange(of: self.contentState.cachedPreviewText) { _, _ in
-            if !self.layout.usesFixedCanvas {
-                BottomOverlayWindowController.shared.refreshSizeForContent()
-            }
+            self.refreshDynamicPreviewSizeIfNeeded(for: self.currentPreviewSizingText)
         }
         .onChange(of: self.contentState.mode) { _, _ in
             if !self.isPromptSelectableMode || self.contentState.isProcessing {
@@ -2485,11 +2661,14 @@ struct BottomOverlayView: View {
             case .command: break
             }
             if !self.layout.usesFixedCanvas {
+                self.dynamicPreviewResizeBucket = self.previewResizeBucket(for: self.currentPreviewSizingText)
                 BottomOverlayWindowController.shared.refreshSizeForContent()
             }
         }
         .onChange(of: self.contentState.isProcessing) { _, processing in
+            self.processingStatusVisible = processing
             if processing {
+                self.processingStatusCycleID &+= 1
                 self.closePromptMenu()
                 self.closeModeMenu()
                 self.closeActionsMenu()
@@ -2499,8 +2678,32 @@ struct BottomOverlayView: View {
             self.isHoveringActionsChip = false
             self.isHoveringSettingsChip = false
             if !self.layout.usesFixedCanvas {
+                self.refreshDynamicPreviewSizeIfNeeded(for: self.currentPreviewSizingText)
+            }
+        }
+        .onChange(of: self.processingStatusVisible) { _, _ in
+            guard !self.layout.usesFixedCanvas else { return }
+            self.refreshDynamicPreviewSizeIfNeeded(for: self.currentPreviewSizingText)
+        }
+        .onChange(of: self.contentState.isBottomOverlayReleaseTransitioning) { _, transitioning in
+            guard !self.layout.usesFixedCanvas else { return }
+            if transitioning {
+                let measuredHeight = self.dynamicPreviewMeasuredHeight > 0
+                    ? self.dynamicPreviewMeasuredHeight
+                    : self.effectiveDynamicPreviewMinHeight
+                self.frozenDynamicPreviewHeight = max(measuredHeight, self.dynamicPreviewBaseMinHeight)
+            } else {
+                self.frozenDynamicPreviewHeight = nil
                 BottomOverlayWindowController.shared.refreshSizeForContent()
             }
+        }
+        .onPreferenceChange(DynamicPreviewHeightPreferenceKey.self) { measuredHeight in
+            guard !self.layout.usesFixedCanvas else { return }
+            guard measuredHeight > 0 else { return }
+            self.dynamicPreviewMeasuredHeight = measuredHeight
+        }
+        .onAppear {
+            self.dynamicPreviewResizeBucket = self.previewResizeBucket(for: self.currentPreviewSizingText)
         }
         .onDisappear {
             self.closePromptMenu()
@@ -2518,9 +2721,6 @@ struct BottomOverlayView: View {
         //         NotchOverlayManager.shared.onNotchClicked?()
         //     }
         // }
-        .animation(.easeInOut(duration: 0.15), value: self.hasTranscription)
-        .animation(.easeInOut(duration: 0.2), value: self.contentState.mode)
-        .animation(.easeInOut(duration: 0.2), value: self.contentState.isProcessing)
     }
 }
 
@@ -2563,6 +2763,10 @@ struct BottomWaveformView: View {
         self.contentState.isProcessing ? 0.0 : 4
     }
 
+    private var isReleaseAnimationActive: Bool {
+        self.contentState.isBottomOverlayReleaseTransitioning || self.contentState.isBottomOverlayDismissing
+    }
+
     /// Safe accessor for bar heights to prevent index-out-of-range crashes
     private func safeBarHeight(at index: Int) -> CGFloat {
         guard index >= 0 && index < self.barHeights.count else {
@@ -2576,16 +2780,23 @@ struct BottomWaveformView: View {
             ForEach(0..<self.barCount, id: \.self) { index in
                 RoundedRectangle(cornerRadius: self.barWidth / 2)
                     .fill(self.color)
-                    .frame(width: self.barWidth, height: self.safeBarHeight(at: index))
-                    .shadow(color: self.color.opacity(self.currentGlowIntensity), radius: self.currentGlowRadius, x: 0, y: 0)
+                    .frame(width: self.barWidth, height: self.isReleaseAnimationActive ? self.minHeight : self.safeBarHeight(at: index))
+                    .shadow(
+                        color: self.color.opacity(self.isReleaseAnimationActive ? 0 : self.currentGlowIntensity),
+                        radius: self.isReleaseAnimationActive ? 0 : self.currentGlowRadius,
+                        x: 0,
+                        y: 0
+                    )
             }
         }
         .onChange(of: self.contentState.bottomOverlayAudioLevel) { _, level in
+            guard !self.isReleaseAnimationActive else { return }
             if !self.contentState.isProcessing {
                 self.updateBars(level: level)
             }
         }
         .onChange(of: self.contentState.isProcessing) { _, processing in
+            guard !self.isReleaseAnimationActive else { return }
             if processing {
                 self.setFlatProcessingBars()
             } else {
@@ -2601,7 +2812,9 @@ struct BottomWaveformView: View {
             if self.barHeights.count != self.barCount {
                 self.barHeights = Array(repeating: self.minHeight, count: self.barCount)
             }
-            if self.contentState.isProcessing {
+            if self.isReleaseAnimationActive {
+                self.barHeights = Array(repeating: self.minHeight, count: self.barCount)
+            } else if self.contentState.isProcessing {
                 self.setFlatProcessingBars()
             } else {
                 self.updateBars(level: 0)
@@ -2638,23 +2851,32 @@ struct BottomWaveformView: View {
         let normalizedLevel = min(max(level, 0), 1)
         let isActive = normalizedLevel > self.noiseThreshold // Use user's sensitivity setting
 
-        withAnimation(.spring(response: 0.08, dampingFraction: 0.55)) {
+        guard isActive, self.noiseThreshold < 1.0 else {
+            if self.barHeights.prefix(self.barCount).allSatisfy({ abs($0 - self.minHeight) < 0.5 }) {
+                return
+            }
+
+            withAnimation(.easeOut(duration: 0.1)) {
+                for i in 0..<self.barCount {
+                    self.barHeights[i] = self.minHeight
+                }
+            }
+            return
+        }
+
+        withAnimation(.easeOut(duration: 0.06)) {
             for i in 0..<self.barCount {
                 let centerDistance = abs(CGFloat(i) - CGFloat(self.barCount - 1) / 2)
                 let centerFactor = 1.0 - (centerDistance / CGFloat(self.barCount / 2)) * 0.3
 
-                if isActive, self.noiseThreshold < 1.0 {
-                    // Amplify the level for more dramatic response
-                    // Safety check: ensure denominator is never zero
-                    let denominator = max(1.0 - self.noiseThreshold, 0.001)
-                    let adjustedLevel = max(min((normalizedLevel - self.noiseThreshold) / denominator, 1.0), 0.0)
+                // Amplify the level for more dramatic response
+                // Safety check: ensure denominator is never zero
+                let denominator = max(1.0 - self.noiseThreshold, 0.001)
+                let adjustedLevel = max(min((normalizedLevel - self.noiseThreshold) / denominator, 1.0), 0.0)
 
-                    let amplifiedLevel = pow(adjustedLevel, 0.6) // More responsive to quieter sounds
-                    let randomVariation = CGFloat.random(in: 0.8...1.0)
-                    self.barHeights[i] = self.minHeight + (self.maxHeight - self.minHeight) * amplifiedLevel * centerFactor * randomVariation
-                } else {
-                    self.barHeights[i] = self.minHeight
-                }
+                let amplifiedLevel = pow(adjustedLevel, 0.6) // More responsive to quieter sounds
+                let barVariation = 0.88 + 0.12 * cos(CGFloat(i) * 1.7)
+                self.barHeights[i] = self.minHeight + (self.maxHeight - self.minHeight) * amplifiedLevel * centerFactor * barVariation
             }
         }
     }

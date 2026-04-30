@@ -1798,6 +1798,13 @@ struct ContentView: View {
         // Stop the ASR service and wait for transcription to complete
         // The processing indicator will stay visible during this phase
         let transcribedText = await asr.stop()
+        DebugLogger.shared.info(
+            "Stop transcription result | chars=\(transcribedText.count) | empty=\(transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",
+            source: "ContentView"
+        )
+        if NotchOverlayManager.shared.isBottomOverlayVisible {
+            BottomOverlayWindowController.shared.beginReleaseTransition()
+        }
 
         // Reset the transcription text display after transcription completes
         NotchOverlayManager.shared.updateTranscriptionText("")
