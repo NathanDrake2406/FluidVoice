@@ -1265,7 +1265,10 @@ final class SettingsStore: ObservableObject {
             let value = self.defaults.object(forKey: Keys.enableStreamingPreview)
             return value as? Bool ?? true // Default to true (enabled)
         }
-        set { self.defaults.set(newValue, forKey: Keys.enableStreamingPreview) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.enableStreamingPreview)
+        }
     }
 
     var enableAIStreaming: Bool {
@@ -1324,12 +1327,14 @@ final class SettingsStore: ObservableObject {
 
     /// Size options for the recording overlay
     enum OverlaySize: String, CaseIterable, Codable {
+        case pill
         case small
         case medium
         case large
 
         var displayName: String {
             switch self {
+            case .pill: return "Pill"
             case .small: return "Small"
             case .medium: return "Medium"
             case .large: return "Large"
