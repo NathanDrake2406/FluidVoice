@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Foundation
 
 struct HotkeyShortcut: Codable, Equatable {
@@ -20,11 +21,7 @@ struct HotkeyShortcut: Codable, Equatable {
         if self.modifierFlags.contains(.option) { parts.append("⌥") }
         if self.modifierFlags.contains(.control) { parts.append("⌃") }
         if self.modifierFlags.contains(.shift) { parts.append("⇧") }
-        if let key = Self.keyCodeToString(keyCode) {
-            parts.append(key)
-        } else {
-            parts.append(String(Character(UnicodeScalar(self.keyCode) ?? "?")))
-        }
+        parts.append(Self.keyCodeToString(keyCode) ?? "?")
 
         if self.modifierFlags.isEmpty {
             return parts.last ?? "Unknown"
@@ -53,54 +50,53 @@ struct HotkeyShortcut: Codable, Equatable {
         case 124: return "Right"
         case 125: return "Down"
         case 126: return "Up"
-        case 0: return "A"
-        case 1: return "S"
-        case 2: return "D"
-        case 3: return "F"
-        case 4: return "H"
-        case 5: return "G"
-        case 6: return "Z"
-        case 7: return "X"
-        case 8: return "C"
-        case 9: return "V"
-        case 11: return "B"
-        case 12: return "Q"
-        case 13: return "W"
-        case 14: return "E"
-        case 15: return "R"
-        case 16: return "Y"
-        case 17: return "T"
-        case 31: return "O"
-        case 32: return "U"
-        case 34: return "I"
-        case 35: return "P"
-        case 37: return "L"
-        case 38: return "J"
-        case 40: return "K"
-        case 45: return "N"
-        case 46: return "M"
-        case 18: return "1"
-        case 19: return "2"
-        case 20: return "3"
-        case 21: return "4"
-        case 23: return "5"
-        case 22: return "6"
-        case 26: return "7"
-        case 28: return "8"
-        case 25: return "9"
-        case 29: return "0"
-        case 24: return "="
-        case 27: return "-"
-        case 33: return "["
-        case 30: return "]"
-        case 41: return ";"
-        case 39: return "'"
-        case 42: return "\\"
-        case 43: return ","
-        case 47: return "."
-        case 44: return "/"
-        case 50: return "`"
-        default: return nil
+        default: return characterForKeyCode(keyCode) ?? qwertyFallback[keyCode]
+        }
+    }
+
+    // US QWERTY names used when TIS layout data is unavailable (e.g. emoji/CJK input sources).
+    private static let qwertyFallback: [UInt16: String] = [
+        0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X",
+        8: "C", 9: "V", 10: "§", 11: "B", 12: "Q", 13: "W", 14: "E", 15: "R",
+        16: "Y", 17: "T", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5",
+        24: "=", 25: "9", 26: "7", 27: "-", 28: "8", 29: "0", 30: "]", 31: "O",
+        32: "U", 33: "[", 34: "I", 35: "P", 37: "L", 38: "J", 39: "'", 40: "K",
+        41: ";", 42: "\\", 43: ",", 44: "/", 45: "N", 46: "M", 47: ".", 50: "`",
+    ]
+
+    /// Uses the current keyboard layout to resolve a key code to its displayed character.
+    static func characterForKeyCode(_ keyCode: UInt16) -> String? {
+        guard let sourceRef = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let rawPtr = TISGetInputSourceProperty(sourceRef, kTISPropertyUnicodeKeyLayoutData)
+        else { return nil }
+
+        let layoutData = Unmanaged<CFData>.fromOpaque(rawPtr).takeUnretainedValue() as Data
+        return layoutData.withUnsafeBytes { buffer -> String? in
+            guard let layoutPtr = buffer.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else {
+                return nil
+            }
+            var deadKeyState: UInt32 = 0
+            var chars = [UniChar](repeating: 0, count: 4)
+            var length = 0
+            let status = UCKeyTranslate(
+                layoutPtr,
+                keyCode,
+                UInt16(kUCKeyActionDisplay),
+                0,
+                UInt32(LMGetKbdType()),
+                UInt32(kUCKeyTranslateNoDeadKeysMask),
+                &deadKeyState,
+                chars.count,
+                &length,
+                &chars
+            )
+            guard status == noErr, length > 0 else { return nil }
+            let raw = String(utf16CodeUnits: chars, count: length)
+            guard !raw.isEmpty, !raw.unicodeScalars.contains(where: { $0.value < 0x20 }) else {
+                return nil
+            }
+            let upper = raw.uppercased()
+            return upper.count == raw.count ? upper : raw
         }
     }
 
