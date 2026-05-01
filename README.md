@@ -4,7 +4,9 @@
 
 Fully open source voice-to-text dictation app for macOS with AI enhancement.
 
-**Get the latest release from [here](https://github.com/altic-dev/Fluid-oss/releases/latest)**
+**Install with Homebrew:** `brew install --cask fluidvoice`
+
+**Manual download:** [latest release](https://github.com/altic-dev/FluidVoice/releases/latest)
 
 > [!IMPORTANT]
 > This project is completely free and open source. If you find FluidVoice useful, please star the repository. It helps with visibility and motivates continued development. Your support means a lot.
@@ -17,11 +19,11 @@ Fully open source voice-to-text dictation app for macOS with AI enhancement.
 
 ## Star History
 
-<a href="https://star-history.com/#altic-dev/Fluid-oss&Date">
+<a href="https://star-history.com/#altic-dev/FluidVoice&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=altic-dev/Fluid-oss&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=altic-dev/Fluid-oss&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=altic-dev/Fluid-oss&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=altic-dev/FluidVoice&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=altic-dev/FluidVoice&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=altic-dev/FluidVoice&type=Date" />
   </picture>
 </a>
 
@@ -104,12 +106,15 @@ Whisper supports up to 99 languages, depending on the model size you choose.
 
 ## Quick Start
 
-1. Download the latest release
-2. Move to Applications folder
-3. Grant microphone and accessibility permissions when prompted
-4. Set your preferred hotkey in settings
-5. Optionally add an AI provider API key for enhanced transcription, keys are stored securely in your macOS Keychain. Make sure select "Always allow" for permissions
-6. Optional: opt in to beta builds in `Settings → Automatic Updates → Beta Releases`
+1. Install with Homebrew:
+   ```bash
+   brew install --cask fluidvoice
+   ```
+   Or download the [latest release](https://github.com/altic-dev/FluidVoice/releases/latest) and move it to Applications.
+2. Grant microphone and accessibility permissions when prompted
+3. Set your preferred hotkey in settings
+4. Optionally add an AI provider API key for enhanced transcription, keys are stored securely in your macOS Keychain. Make sure select "Always allow" for permissions
+5. Optional: opt in to beta builds in `Settings → Automatic Updates → Beta Releases`
 
 ## Requirements
 
@@ -127,8 +132,8 @@ https://discord.gg/VUPHaKSvYV
 ## Building from Source
 
 ```bash
-git clone https://github.com/altic-dev/Fluid-oss.git
-cd Fluid-oss
+git clone https://github.com/altic-dev/FluidVoice.git
+cd FluidVoice
 open Fluid.xcodeproj
 ```
 
@@ -142,8 +147,8 @@ Contributions are welcome! Please create an issue first to discuss any major cha
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/altic-dev/Fluid-oss.git
-   cd Fluid-oss
+   git clone https://github.com/altic-dev/FluidVoice.git
+   cd FluidVoice
    ```
 
 2. **Open in Xcode:**

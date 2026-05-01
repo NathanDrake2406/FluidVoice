@@ -5,7 +5,9 @@
 //  Created by Assistant
 //
 
+import AppKit
 import Combine
+import QuartzCore
 import SwiftUI
 
 // MARK: - Observable state for notch content (Singleton)
@@ -131,6 +133,9 @@ class NotchContentState: ObservableObject {
     // MARK: - Bottom Overlay Audio Level
 
     @Published var bottomOverlayAudioLevel: CGFloat = 0 // Audio level for bottom overlay waveform
+    @Published var isBottomOverlayReleaseTransitioning: Bool = false
+    @Published var isBottomOverlayDismissing: Bool = false
+    @Published var bottomOverlayDismissOffsetY: CGFloat = 8
 
     /// Called when the user requests a live mode switch from the prompt picker tabs.
     var onPromptModeSwitchRequested: ((SettingsStore.PromptMode) -> Void)?
@@ -159,6 +164,22 @@ class NotchContentState: ObservableObject {
     func updateExpandedModeAudioLevel(_ level: CGFloat) {
         guard self.isRecordingInExpandedMode else { return }
         self.expandedModeAudioLevel = level
+    }
+
+    func setBottomOverlayReleaseTransitioning(_ transitioning: Bool) {
+        guard self.isBottomOverlayReleaseTransitioning != transitioning else { return }
+        self.isBottomOverlayReleaseTransitioning = transitioning
+    }
+
+    func setBottomOverlayDismissing(_ dismissing: Bool) {
+        guard self.isBottomOverlayDismissing != dismissing else { return }
+        self.isBottomOverlayDismissing = dismissing
+    }
+
+    func setBottomOverlayDismissOffsetY(_ offset: CGFloat) {
+        let normalizedOffset = max(offset, 8)
+        guard abs(self.bottomOverlayDismissOffsetY - normalizedOffset) > 0.5 else { return }
+        self.bottomOverlayDismissOffsetY = normalizedOffset
     }
 
     // MARK: - Command Output Methods
@@ -240,34 +261,114 @@ struct ShimmerText: View {
     let color: Color
     var font: Font = .system(size: 9, weight: .medium)
 
-    /// Seconds per shimmer sweep.
-    /// Lower is faster.
-    private let periodSeconds: Double = 0.85
-    private let bandHalfWidth: CGFloat = 0.32
-
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
-            let progress = (t / self.periodSeconds).truncatingRemainder(dividingBy: 1.0)
-            // Sweep from slightly before to slightly after to avoid hard edges.
-            let centerX = CGFloat(-0.25 + progress * 1.5) // -0.25 -> 1.25
+        Text(self.text)
+            .font(self.font)
+            .foregroundStyle(self.color.opacity(0.35))
+            .overlay {
+                CompositorShimmerSweep(duration: 0.72, peakOpacity: 0.9)
+                    .mask {
+                        Text(self.text)
+                            .font(self.font)
+                    }
+            }
+    }
+}
 
-            Text(self.text)
-                .font(self.font)
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [
-                            self.color.opacity(0.35),
-                            self.color.opacity(0.35),
-                            self.color.opacity(1.0),
-                            self.color.opacity(0.35),
-                            self.color.opacity(0.35),
-                        ],
-                        startPoint: UnitPoint(x: centerX - self.bandHalfWidth, y: 0.5),
-                        endPoint: UnitPoint(x: centerX + self.bandHalfWidth, y: 0.5)
-                    )
-                )
+struct CompositorShimmerSweep: NSViewRepresentable {
+    var duration: CFTimeInterval = 1.0
+    var peakOpacity: CGFloat = 0.88
+
+    func makeNSView(context: Context) -> CompositorShimmerSweepView {
+        let view = CompositorShimmerSweepView()
+        view.configure(duration: self.duration, peakOpacity: self.peakOpacity)
+        return view
+    }
+
+    func updateNSView(_ nsView: CompositorShimmerSweepView, context: Context) {
+        nsView.configure(duration: self.duration, peakOpacity: self.peakOpacity)
+    }
+}
+
+final class CompositorShimmerSweepView: NSView {
+    private let gradientLayer = CAGradientLayer()
+    private var animationDuration: CFTimeInterval = 1.0
+    private var peakOpacity: CGFloat = 0.88
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        self.wantsLayer = true
+
+        let backingLayer = CALayer()
+        backingLayer.masksToBounds = true
+        self.layer = backingLayer
+
+        self.gradientLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        self.gradientLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        self.gradientLayer.locations = [-0.45, -0.15, 0.15]
+        backingLayer.addSublayer(self.gradientLayer)
+        self.updateColors()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        self.gradientLayer.frame = self.bounds
+        CATransaction.commit()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if self.window == nil {
+            self.gradientLayer.removeAnimation(forKey: "fluid.shimmer.locations")
+        } else {
+            self.startAnimationIfNeeded()
         }
+    }
+
+    func configure(duration: CFTimeInterval, peakOpacity: CGFloat) {
+        let clampedDuration = max(duration, 0.2)
+        let clampedOpacity = min(max(peakOpacity, 0.0), 1.0)
+        let shouldRestart = abs(self.animationDuration - clampedDuration) > 0.01
+        let shouldUpdateColors = abs(self.peakOpacity - clampedOpacity) > 0.01
+
+        self.animationDuration = clampedDuration
+        self.peakOpacity = clampedOpacity
+        if shouldUpdateColors {
+            self.updateColors()
+        }
+        if shouldRestart {
+            self.startAnimationIfNeeded()
+        }
+    }
+
+    private func updateColors() {
+        self.gradientLayer.colors = [
+            NSColor.white.withAlphaComponent(0).cgColor,
+            NSColor.white.withAlphaComponent(self.peakOpacity).cgColor,
+            NSColor.white.withAlphaComponent(0).cgColor,
+        ]
+    }
+
+    private func startAnimationIfNeeded() {
+        guard self.window != nil else { return }
+        self.gradientLayer.removeAnimation(forKey: "fluid.shimmer.locations")
+
+        let animation = CABasicAnimation(keyPath: "locations")
+        animation.fromValue = [-0.45, -0.15, 0.15]
+        animation.toValue = [0.85, 1.15, 1.45]
+        animation.duration = self.animationDuration
+        animation.repeatCount = .infinity
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        animation.isRemovedOnCompletion = false
+
+        self.gradientLayer.add(animation, forKey: "fluid.shimmer.locations")
     }
 }
 
@@ -816,8 +917,6 @@ struct NotchWaveformView: View {
     private let barSpacing: CGFloat = 2
     private let minHeight: CGFloat = 3
     private let maxHeight: CGFloat = 12
-    private let processingSweepSeconds: Double = 2.15
-    private let processingBandHalfWidth: CGFloat = 0.42
     private let processingFlatHeight: CGFloat = 3
 
     private var currentGlowIntensity: CGFloat {
@@ -839,22 +938,20 @@ struct NotchWaveformView: View {
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            ZStack {
-                self.barsView(using: { index in
-                    self.displayHeight(for: index)
-                })
-                .foregroundStyle(self.color.opacity(self.contentState.isProcessing ? 0.16 : 1.0))
+        ZStack {
+            self.barsView(using: { index in
+                self.displayHeight(for: index)
+            })
+            .foregroundStyle(self.color.opacity(self.contentState.isProcessing ? 0.16 : 1.0))
 
-                if self.contentState.isProcessing {
-                    self.processingSweep(at: timeline.date)
-                        .mask {
-                            self.barsView(using: { index in
-                                self.displayHeight(for: index)
-                            })
-                        }
-                        .shadow(color: .white.opacity(0.28), radius: 2.5, x: 0, y: 0)
-                }
+            if self.contentState.isProcessing {
+                CompositorShimmerSweep(duration: 1.05, peakOpacity: 0.9)
+                    .mask {
+                        self.barsView(using: { index in
+                            self.displayHeight(for: index)
+                        })
+                    }
+                    .shadow(color: .white.opacity(0.28), radius: 2.5, x: 0, y: 0)
             }
         }
         .onChange(of: self.data.audioLevel) { _, level in
@@ -898,28 +995,6 @@ struct NotchWaveformView: View {
                     .shadow(color: self.color.opacity(self.currentGlowIntensity * 0.5), radius: self.currentOuterGlowRadius, x: 0, y: 0)
             }
         }
-    }
-
-    private func processingSweep(at date: Date) -> some View {
-        let progress = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: self.processingSweepSeconds) / self.processingSweepSeconds
-        let centerX = CGFloat(-0.25 + progress * 1.5)
-
-        return Rectangle()
-            .foregroundStyle(
-                LinearGradient(
-                    colors: [
-                        self.color.opacity(0.12),
-                        self.color.opacity(0.28),
-                        .white.opacity(0.88),
-                        self.color.opacity(1.0),
-                        .white.opacity(0.88),
-                        self.color.opacity(0.28),
-                        self.color.opacity(0.12),
-                    ],
-                    startPoint: UnitPoint(x: centerX - self.processingBandHalfWidth, y: 0.5),
-                    endPoint: UnitPoint(x: centerX + self.processingBandHalfWidth, y: 0.5)
-                )
-            )
     }
 
     private func displayHeight(for index: Int) -> CGFloat {
@@ -1566,8 +1641,6 @@ struct CompactNotchWaveformView: View {
     private let minHeight: CGFloat = 3
     private let maxHeight: CGFloat = 15
     private let noiseThreshold: CGFloat = 0.05
-    private let processingSweepSeconds: Double = 2.15
-    private let processingBandHalfWidth: CGFloat = 0.42
     private let processingFlatHeight: CGFloat = 3
 
     init(audioPublisher: AnyPublisher<CGFloat, Never>, color: Color) {
@@ -1577,22 +1650,20 @@ struct CompactNotchWaveformView: View {
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            ZStack {
-                self.barsView(using: { index in
-                    self.displayHeight(for: index)
-                })
-                .foregroundStyle(self.color.opacity(self.contentState.isProcessing ? 0.16 : 1.0))
+        ZStack {
+            self.barsView(using: { index in
+                self.displayHeight(for: index)
+            })
+            .foregroundStyle(self.color.opacity(self.contentState.isProcessing ? 0.16 : 1.0))
 
-                if self.contentState.isProcessing {
-                    self.processingSweep(at: timeline.date)
-                        .mask {
-                            self.barsView(using: { index in
-                                self.displayHeight(for: index)
-                            })
-                        }
-                        .shadow(color: .white.opacity(0.28), radius: 2.5, x: 0, y: 0)
-                }
+            if self.contentState.isProcessing {
+                CompositorShimmerSweep(duration: 1.05, peakOpacity: 0.9)
+                    .mask {
+                        self.barsView(using: { index in
+                            self.displayHeight(for: index)
+                        })
+                    }
+                    .shadow(color: .white.opacity(0.28), radius: 2.5, x: 0, y: 0)
             }
         }
         .onChange(of: self.data.audioLevel) { _, level in
@@ -1624,32 +1695,6 @@ struct CompactNotchWaveformView: View {
                     .frame(width: self.barWidth, height: height(index))
             }
         }
-    }
-
-    private func processingSweep(at date: Date) -> some View {
-        let progress = self.processingProgress(at: date)
-        let centerX = CGFloat(-0.25 + progress * 1.5)
-
-        return Rectangle()
-            .foregroundStyle(
-                LinearGradient(
-                    colors: [
-                        self.color.opacity(0.12),
-                        self.color.opacity(0.28),
-                        .white.opacity(0.88),
-                        self.color.opacity(1.0),
-                        .white.opacity(0.88),
-                        self.color.opacity(0.28),
-                        self.color.opacity(0.12),
-                    ],
-                    startPoint: UnitPoint(x: centerX - self.processingBandHalfWidth, y: 0.5),
-                    endPoint: UnitPoint(x: centerX + self.processingBandHalfWidth, y: 0.5)
-                )
-            )
-    }
-
-    private func processingProgress(at date: Date) -> Double {
-        date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: self.processingSweepSeconds) / self.processingSweepSeconds
     }
 
     private func displayHeight(for index: Int) -> CGFloat {
