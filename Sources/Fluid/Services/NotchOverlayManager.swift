@@ -242,7 +242,7 @@ final class NotchOverlayManager {
 
         // Create notch with SwiftUI views
         let newNotch = DynamicNotch(
-            hoverBehavior: [.keepVisible],
+            hoverBehavior: [], // Recording overlays should dismiss even if hover state gets stale.
             style: .auto
         ) {
             NotchExpandedView(audioPublisher: audioLevelPublisher)
