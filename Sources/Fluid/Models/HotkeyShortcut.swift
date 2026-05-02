@@ -21,7 +21,7 @@ struct HotkeyShortcut: Codable, Equatable {
         if self.modifierFlags.contains(.option) { parts.append("⌥") }
         if self.modifierFlags.contains(.control) { parts.append("⌃") }
         if self.modifierFlags.contains(.shift) { parts.append("⇧") }
-        parts.append(Self.keyCodeToString(keyCode) ?? "?")
+        parts.append(Self.keyCodeToString(self.keyCode) ?? "?")
 
         if self.modifierFlags.isEmpty {
             return parts.last ?? "Unknown"
@@ -50,7 +50,7 @@ struct HotkeyShortcut: Codable, Equatable {
         case 124: return "Right"
         case 125: return "Down"
         case 126: return "Up"
-        default: return characterForKeyCode(keyCode) ?? qwertyFallback[keyCode]
+        default: return self.characterForKeyCode(keyCode) ?? self.qwertyFallback[keyCode]
         }
     }
 
