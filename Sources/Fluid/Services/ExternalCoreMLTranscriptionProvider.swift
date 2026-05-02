@@ -154,7 +154,10 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
             source: "ExternalCoreML"
         )
         let promptIDs = self.coherePromptIDsForCurrentLanguage()
-        let text = try await self.transcribeByManifestWindow(samples, manager: manager, promptIDs: promptIDs)
+        let text = try await manager.transcribe(
+            audioSamples: samples,
+            promptIDs: promptIDs.isEmpty ? nil : promptIDs
+        )
         let elapsed = Date().timeIntervalSince(startedAt)
         let rtf = audioSeconds > 0 ? elapsed / audioSeconds : 0
         DebugLogger.shared.info(
@@ -421,52 +424,6 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
         let maxPreviewSamples = Int(Double(sampleRate) * self.streamingPreviewMaxSeconds)
         guard samples.count > maxPreviewSamples else { return samples }
         return Array(samples.suffix(maxPreviewSamples))
-    }
-
-    private func transcribeByManifestWindow(
-        _ samples: [Float],
-        manager: CohereTranscribeAsrManager,
-        promptIDs: [Int]
-    ) async throws -> String {
-        let runtimePromptIDs = promptIDs.isEmpty ? nil : promptIDs
-        let maxAudioSamples = self.loadedManifest?.maxAudioSamples ?? 0
-        guard maxAudioSamples > 0 else {
-            return try await manager.transcribe(
-                audioSamples: samples,
-                promptIDs: runtimePromptIDs
-            )
-        }
-
-        if samples.count <= maxAudioSamples {
-            return try await manager.transcribe(
-                audioSamples: self.paddedSamplesToModelLimit(samples),
-                promptIDs: runtimePromptIDs
-            )
-        }
-
-        let overlapSamples = min(self.loadedManifest?.overlapSamples ?? 0, maxAudioSamples / 2)
-        let step = max(maxAudioSamples - overlapSamples, 1)
-        var chunkTexts: [String] = []
-        var startIndex = 0
-
-        while startIndex < samples.count {
-            let endIndex = min(startIndex + maxAudioSamples, samples.count)
-            let chunk = Array(samples[startIndex..<endIndex])
-            let text = try await manager.transcribe(
-                audioSamples: self.paddedSamplesToModelLimit(chunk),
-                promptIDs: runtimePromptIDs
-            )
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty == false {
-                chunkTexts.append(trimmed)
-            }
-            if endIndex >= samples.count {
-                break
-            }
-            startIndex += step
-        }
-
-        return chunkTexts.joined(separator: " ")
     }
 
     private func paddedSamplesToModelLimit(_ samples: [Float]) -> [Float] {
