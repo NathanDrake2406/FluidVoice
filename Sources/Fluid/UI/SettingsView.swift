@@ -763,16 +763,6 @@ struct SettingsView: View {
                                     Divider().opacity(0.2)
 
                                     self.optionToggleRow(
-                                        title: "Show Live Preview",
-                                        description: "Display transcription text in real-time in the overlay as you speak.",
-                                        isOn: self.$enableStreamingPreview
-                                    )
-                                    .onChange(of: self.enableStreamingPreview) { _, newValue in
-                                        SettingsStore.shared.enableStreamingPreview = newValue
-                                    }
-                                    Divider().opacity(0.2)
-
-                                    self.optionToggleRow(
                                         title: "Copy to Clipboard",
                                         description: "Automatically copy transcribed text to clipboard as a backup.",
                                         isOn: self.$copyToClipboard

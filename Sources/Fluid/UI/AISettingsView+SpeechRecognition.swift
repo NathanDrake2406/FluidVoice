@@ -45,120 +45,125 @@ extension VoiceEngineSettingsView {
                             .shadow(color: self.theme.metrics.cardShadow.color.opacity(self.theme.metrics.cardShadow.opacity), radius: self.theme.metrics.cardShadow.radius, x: self.theme.metrics.cardShadow.x, y: self.theme.metrics.cardShadow.y)
                     )
 
-                HStack(spacing: 6) {
-                    Image(systemName: "info.circle")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text("Click a row to preview. Press Activate to load the model.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Menu {
-                        ForEach(SpeechProviderFilter.allCases) { option in
-                            Button(option.rawValue) {
-                                self.viewModel.providerFilter = option
-                            }
-                        }
-                    } label: {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 14) {
                         HStack(spacing: 6) {
-                            Image(systemName: "line.3.horizontal.decrease.circle")
-                                .font(.caption)
-                            Text("Filter: \(self.viewModel.providerFilter.rawValue)")
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                        }
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 9)
-                                .fill(self.theme.palette.cardBackground.opacity(0.8))
-                                .overlay(
+                            Image(systemName: "info.circle")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("Click a row to preview. Press Activate to load the model.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Menu {
+                                ForEach(SpeechProviderFilter.allCases) { option in
+                                    Button(option.rawValue) {
+                                        self.viewModel.providerFilter = option
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "line.3.horizontal.decrease.circle")
+                                        .font(.caption)
+                                    Text("Filter: \(self.viewModel.providerFilter.rawValue)")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                }
+                                .foregroundStyle(.primary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
                                     RoundedRectangle(cornerRadius: 9)
-                                        .stroke(self.theme.palette.cardBorder.opacity(0.5), lineWidth: 1)
+                                        .fill(self.theme.palette.cardBackground.opacity(0.8))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 9)
+                                                .stroke(self.theme.palette.cardBorder.opacity(0.5), lineWidth: 1)
+                                        )
                                 )
-                        )
-                    }
-                    Menu {
-                        ForEach(ModelSortOption.allCases) { option in
-                            Button(option.rawValue) {
-                                self.viewModel.modelSortOption = option
+                            }
+                            Menu {
+                                ForEach(ModelSortOption.allCases) { option in
+                                    Button(option.rawValue) {
+                                        self.viewModel.modelSortOption = option
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text("Sort by: \(self.viewModel.modelSortOption.rawValue)")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                }
+                                .foregroundStyle(.primary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 9)
+                                        .fill(self.theme.palette.cardBackground.opacity(0.8))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 9)
+                                                .stroke(self.theme.palette.cardBorder.opacity(0.5), lineWidth: 1)
+                                        )
+                                )
                             }
                         }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text("Sort by: \(self.viewModel.modelSortOption.rawValue)")
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                        }
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 9)
-                                .fill(self.theme.palette.cardBackground.opacity(0.8))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 9)
-                                        .stroke(self.theme.palette.cardBorder.opacity(0.5), lineWidth: 1)
-                                )
-                        )
-                    }
-                }
 
-                // Active + Other models list
-                VStack(alignment: .leading, spacing: 10) {
-                    if let activeModel {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Active Model")
-                                .font(.callout)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.secondary)
-                            self.speechModelCard(for: activeModel)
-                        }
-                    } else {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Active Model")
-                                .font(.callout)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.secondary)
-                            Label("No active model yet. Download and activate one below.", systemImage: "arrow.down.circle")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                        // Active + Other models list
+                        VStack(alignment: .leading, spacing: 10) {
+                            if let activeModel {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Active Model")
+                                        .font(.callout)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.secondary)
+                                    self.speechModelCard(for: activeModel)
+                                }
+                            } else {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Active Model")
+                                        .font(.callout)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.secondary)
+                                    Label("No active model yet. Download and activate one below.", systemImage: "arrow.down.circle")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
 
-                    Divider().padding(.vertical, 2)
+                            Divider().padding(.vertical, 2)
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(hasActiveModel ? "Other Models" : "Available Models")
-                            .font(.callout)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.secondary)
-                        VStack(spacing: 8) {
-                            ForEach(otherModels) { model in
-                                self.speechModelCard(for: model)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(hasActiveModel ? "Other Models" : "Available Models")
+                                    .font(.callout)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.secondary)
+                                VStack(spacing: 8) {
+                                    ForEach(otherModels) { model in
+                                        self.speechModelCard(for: model)
+                                    }
+                                }
                             }
                         }
-                    }
-                }
-                .padding(12)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(self.theme.palette.cardBackground.opacity(0.9))
-                        .overlay(
+                        .padding(12)
+                        .background(
                             RoundedRectangle(cornerRadius: 12)
-                                .stroke(self.theme.palette.cardBorder.opacity(0.3), lineWidth: 1)
+                                .fill(self.theme.palette.cardBackground.opacity(0.9))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(self.theme.palette.cardBorder.opacity(0.3), lineWidth: 1)
+                                )
+                                .shadow(color: self.theme.metrics.cardShadow.color.opacity(self.theme.metrics.cardShadow.opacity), radius: self.theme.metrics.cardShadow.radius, x: self.theme.metrics.cardShadow.x, y: self.theme.metrics.cardShadow.y)
                         )
-                        .shadow(color: self.theme.metrics.cardShadow.color.opacity(self.theme.metrics.cardShadow.opacity), radius: self.theme.metrics.cardShadow.radius, x: self.theme.metrics.cardShadow.x, y: self.theme.metrics.cardShadow.y)
-                )
 
-                Divider().padding(.vertical, 4)
+                        Divider().padding(.vertical, 4)
 
-                // Filler Words Section
-                self.fillerWordsSection
+                        // Filler Words Section
+                        self.fillerWordsSection
+                    }
+                }
             }
             .padding(14)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     /// Stats panel showing speed/accuracy bars that animate when model changes

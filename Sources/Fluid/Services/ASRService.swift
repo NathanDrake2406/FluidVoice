@@ -501,6 +501,10 @@ final class ASRService: ObservableObject {
     private var streamingChunkAnalyticsSuccessCount: Int = 0
     private var lastStreamingChunkFailureAnalyticsAt: Date?
     private let transcriptionExecutor = TranscriptionExecutor() // Serializes all CoreML access
+    private var engineConfigurationChangeObserver: NSObjectProtocol?
+    private var audioRouteRecoveryTask: Task<Void, Never>?
+    private let audioRouteRecoveryDelayNanoseconds: UInt64 = 1_000_000_000
+    private var isRecoveringAudioRoute = false
 
     /// Tracks whether we paused system media for this recording session.
     /// Used to resume playback only if we were the ones who paused it.
@@ -556,6 +560,9 @@ final class ASRService: ObservableObject {
 
     deinit {
         if let observer = self.vocabularyChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = self.engineConfigurationChangeObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -637,6 +644,7 @@ final class ASRService: ObservableObject {
         self.micPermissionGranted = (self.micStatus == .authorized)
 
         self.registerDefaultDeviceChangeListener()
+        self.registerEngineConfigurationChangeObserver()
         self.registerDeviceListChangeListener()
 
         // Initialize device list cache
@@ -745,6 +753,9 @@ final class ASRService: ObservableObject {
 
         // Reset media pause state for this session
         self.didPauseMediaForThisSession = false
+        self.audioRouteRecoveryTask?.cancel()
+        self.audioRouteRecoveryTask = nil
+        self.isRecoveringAudioRoute = false
 
         DebugLogger.shared.debug("🧹 Clearing buffers and state", source: "ASRService")
         self.finalText.removeAll()
@@ -878,6 +889,10 @@ final class ASRService: ObservableObject {
             return ""
         }
         defer { self.applyPendingParakeetVocabularyReloadIfNeeded() }
+
+        self.audioRouteRecoveryTask?.cancel()
+        self.audioRouteRecoveryTask = nil
+        self.isRecoveringAudioRoute = false
 
         // Capture media pause state before we reset it, for resuming at the end
         let shouldResumeMedia = SettingsStore.shared.pauseMediaDuringTranscription && self.didPauseMediaForThisSession
@@ -1053,6 +1068,10 @@ final class ASRService: ObservableObject {
     func stopWithoutTranscription() async {
         guard self.isRunning else { return }
         defer { self.applyPendingParakeetVocabularyReloadIfNeeded() }
+
+        self.audioRouteRecoveryTask?.cancel()
+        self.audioRouteRecoveryTask = nil
+        self.isRecoveringAudioRoute = false
 
         // Capture media pause state before we reset it, for resuming at the end
         let shouldResumeMedia = SettingsStore.shared.pauseMediaDuringTranscription && self.didPauseMediaForThisSession
@@ -1595,6 +1614,78 @@ final class ASRService: ObservableObject {
         DebugLogger.shared.debug("✅ setupEngineTap() - COMPLETED", source: "ASRService")
     }
 
+    private func scheduleAudioRouteRecovery(reason: String) {
+        guard self.isRunning else {
+            self.audioLevelSubject.send(0.0)
+            return
+        }
+        guard self.isRecoveringAudioRoute == false else {
+            DebugLogger.shared.debug("Ignoring audio route recovery request during active recovery (\(reason))", source: "ASRService")
+            return
+        }
+
+        DebugLogger.shared.warning("Audio route changed while recording; scheduling recovery (\(reason))", source: "ASRService")
+        self.audioCapturePipeline.setRecordingEnabled(false)
+        self.audioLevelSubject.send(0.0)
+
+        self.audioRouteRecoveryTask?.cancel()
+        let recoveryDelayNanoseconds = self.audioRouteRecoveryDelayNanoseconds
+        self.audioRouteRecoveryTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: recoveryDelayNanoseconds)
+            } catch {
+                return
+            }
+            await self?.recoverAudioRoute(reason: reason)
+        }
+    }
+
+    @MainActor
+    private func recoverAudioRoute(reason: String) async {
+        guard self.isRunning else { return }
+        guard self.isRecoveringAudioRoute == false else { return }
+
+        self.isRecoveringAudioRoute = true
+        defer {
+            self.isRecoveringAudioRoute = false
+            self.audioRouteRecoveryTask = nil
+        }
+
+        DebugLogger.shared.info("Recovering audio route after \(reason)", source: "ASRService")
+        self.audioCapturePipeline.setRecordingEnabled(false)
+
+        self.stopMonitoringDevice()
+        self.removeEngineTap()
+        self.engine.stop()
+
+        let oldEngine = self.engineStorage
+        self.engineStorage = nil
+        if let oldEngine {
+            DispatchQueue.global(qos: .utility).async { _ = oldEngine }
+        }
+
+        do {
+            try self.configureSession()
+            try self.startEngine()
+            try self.setupEngineTap()
+            self.audioCapturePipeline.setRecordingEnabled(true)
+
+            if let currentDevice = self.getCurrentlyBoundInputDevice() {
+                self.startMonitoringDevice(currentDevice.id)
+            }
+
+            DebugLogger.shared.info("Audio route recovery succeeded", source: "ASRService")
+        } catch {
+            DebugLogger.shared.error("Audio route recovery failed: \(error)", source: "ASRService")
+            await self.stopWithoutTranscription()
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ASRServiceDeviceDisconnected"),
+                object: nil,
+                userInfo: ["errorMessage": "Recording stopped because the audio device changed."]
+            )
+        }
+    }
+
     private func handleDefaultInputChanged() {
         // If we're not syncing with macOS system settings, ignore system-default changes.
         // In independent mode, we explicitly bind to `preferredInputDeviceUID` on start/restart.
@@ -1603,48 +1694,98 @@ final class ASRService: ObservableObject {
             return
         }
 
-        // Restart engine to bind to the new default input and resume level publishing
-        if self.isRunning {
-            self.removeEngineTap()
-            self.engine.stop()
-            // Recreate engine for system device change
-            self.engineStorage = nil
-            do {
-                try self.configureSession()
-                try self.startEngine()
-                try self.setupEngineTap()
-            } catch {}
+        self.scheduleAudioRouteRecovery(reason: "default input changed")
+    }
+
+    private func handleDefaultOutputChanged() {
+        guard SettingsStore.shared.syncAudioDevicesWithSystem else {
+            DebugLogger.shared.debug("Ignoring system default output change (sync disabled)", source: "ASRService")
+            return
         }
-        // Nudge visualizer
-        DispatchQueue.main.async { self.audioLevelSubject.send(0.0) }
+
+        self.scheduleAudioRouteRecovery(reason: "default output changed")
+    }
+
+    private func handleEngineConfigurationChanged(_ changedEngine: AVAudioEngine?) {
+        guard let changedEngine,
+              let currentEngine = self.engineStorage as? AVAudioEngine,
+              changedEngine === currentEngine
+        else { return }
+
+        self.scheduleAudioRouteRecovery(reason: "engine configuration changed")
+    }
+
+    private func registerEngineConfigurationChangeObserver() {
+        guard self.engineConfigurationChangeObserver == nil else { return }
+
+        self.engineConfigurationChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let changedEngine = notification.object as? AVAudioEngine else { return }
+            Task { @MainActor [weak self, weak changedEngine] in
+                self?.handleEngineConfigurationChanged(changedEngine)
+            }
+        }
     }
 
     private var defaultInputListenerInstalled = false
     private var defaultInputListenerToken: AudioObjectPropertyListenerBlock?
+    private var defaultOutputListenerToken: AudioObjectPropertyListenerBlock?
     private func registerDefaultDeviceChangeListener() {
-        guard self.defaultInputListenerInstalled == false else { return }
-        var address = AudioObjectPropertyAddress(
+        guard self.defaultInputListenerInstalled == false || self.defaultOutputListenerToken == nil else { return }
+        var inputAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        let token: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            // Defer to next runloop pass — CoreAudio may hold an internal lock during
-            // this callback, and our handler makes synchronous CoreAudio queries that
-            // would deadlock waiting for the same lock.
-            DispatchQueue.main.async { self?.handleDefaultInputChanged() }
-        }
-        let status = AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            DispatchQueue.main,
-            token
+        var outputAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
         )
-        if status == noErr { self.defaultInputListenerInstalled = true }
-        if status == noErr {
-            self.defaultInputListenerToken = token
-        } else {
-            self.defaultInputListenerToken = nil
+
+        if self.defaultInputListenerInstalled == false {
+            let inputToken: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                // Defer to next runloop pass — CoreAudio may hold an internal lock during
+                // this callback, and our handler makes synchronous CoreAudio queries that
+                // would deadlock waiting for the same lock.
+                DispatchQueue.main.async { self?.handleDefaultInputChanged() }
+            }
+            let inputStatus = AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &inputAddress,
+                DispatchQueue.main,
+                inputToken
+            )
+
+            if inputStatus == noErr {
+                self.defaultInputListenerInstalled = true
+                self.defaultInputListenerToken = inputToken
+            } else {
+                self.defaultInputListenerToken = nil
+                DebugLogger.shared.error("Failed to register default input listener: \(inputStatus)", source: "ASRService")
+            }
+        }
+
+        if self.defaultOutputListenerToken == nil {
+            let outputToken: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                DispatchQueue.main.async { self?.handleDefaultOutputChanged() }
+            }
+            let outputStatus = AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &outputAddress,
+                DispatchQueue.main,
+                outputToken
+            )
+
+            if outputStatus == noErr {
+                self.defaultOutputListenerToken = outputToken
+            } else {
+                self.defaultOutputListenerToken = nil
+                DebugLogger.shared.warning("Failed to register default output listener: \(outputStatus)", source: "ASRService")
+            }
         }
     }
 
@@ -1771,8 +1912,11 @@ final class ASRService: ObservableObject {
                         )
 
                         if self.isRunning {
-                            DebugLogger.shared.info("Recording in progress - restarting engine with preferred device", source: "ASRService")
-                            self.restartEngineWithDevice(preferredDevice)
+                            DebugLogger.shared.info(
+                                "Recording in progress - deferring preferred device switch until audio route recovery",
+                                source: "ASRService"
+                            )
+                            self.scheduleAudioRouteRecovery(reason: "preferred input reconnected")
                         } else {
                             DebugLogger.shared.info("Not recording - updating binding for next session", source: "ASRService")
                             _ = self.setEngineInputDevice(
@@ -1799,8 +1943,11 @@ final class ASRService: ObservableObject {
                             DebugLogger.shared.debug("Updated preferred input device to: \(device.uid)", source: "ASRService")
 
                             if self.isRunning {
-                                DebugLogger.shared.info("Recording in progress - restarting engine with new Bluetooth device", source: "ASRService")
-                                self.restartEngineWithDevice(device)
+                                DebugLogger.shared.info(
+                                    "Recording in progress - deferring Bluetooth switch until audio route recovery",
+                                    source: "ASRService"
+                                )
+                                self.scheduleAudioRouteRecovery(reason: "bluetooth input connected")
                             } else {
                                 DebugLogger.shared.info("Not recording - Bluetooth device will be used on next recording", source: "ASRService")
                             }
@@ -1836,111 +1983,16 @@ final class ASRService: ObservableObject {
             self.stopMonitoringDevice()
 
             if self.isRunning {
-                // Instead of cancelling, try to hot-swap to another available device
-                // so the recording continues seamlessly.
                 DebugLogger.shared.info(
-                    "🔄 Device died during recording — attempting hot-swap to fallback device",
+                    "Device changed during recording - deferring rebuild until audio route recovery",
                     source: "ASRService"
                 )
-
-                self.removeEngineTap()
-                self.engine.stop()
-                // Release dead engine on background thread (dealloc can block in CoreAudio)
-                let oldEngine = self.engineStorage
-                self.engineStorage = nil
-                if let oldEngine {
-                    DispatchQueue.global(qos: .utility).async { _ = oldEngine }
-                }
-
-                // Query available devices off-main after a short delay for CoreAudio to settle
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    Thread.sleep(forTimeInterval: 0.3)
-                    let availableInputs = AudioDevice.listInputDevices()
-                    let defaultDevice = AudioDevice.getDefaultInputDevice()
-
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self, self.isRunning else { return }
-
-                        guard let fallback = defaultDevice ?? availableInputs.first else {
-                            DebugLogger.shared.error("🛑 No fallback device — cancelling recording", source: "ASRService")
-                            Task { @MainActor in
-                                await self.stopWithoutTranscription()
-                                NotificationCenter.default.post(
-                                    name: NSNotification.Name("ASRServiceDeviceDisconnected"),
-                                    object: nil,
-                                    userInfo: ["errorMessage": "Recording cancelled: No audio device available"]
-                                )
-                            }
-                            return
-                        }
-
-                        DebugLogger.shared.info("🔄 Hot-swapping to: '\(fallback.name)'", source: "ASRService")
-                        do {
-                            try self.configureSession()
-                            _ = self.setEngineInputDevice(
-                                deviceID: fallback.id, deviceUID: fallback.uid, deviceName: fallback.name
-                            )
-                            try self.startEngine()
-                            try self.setupEngineTap()
-                            self.startMonitoringDevice(fallback.id)
-                            DebugLogger.shared.info("✅ Hot-swap successful — recording continues with '\(fallback.name)'", source: "ASRService")
-                        } catch {
-                            DebugLogger.shared.error("❌ Hot-swap failed: \(error)", source: "ASRService")
-                            Task { @MainActor in await self.stopWithoutTranscription() }
-                        }
-                    }
-                }
+                self.scheduleAudioRouteRecovery(reason: "monitored input disconnected")
             } else {
                 DebugLogger.shared.info("Not recording - device disconnect handled gracefully", source: "ASRService")
             }
         } else if status == noErr, isAlive != 0 {
             DebugLogger.shared.info("✅ Device (ID: \(deviceID)) is still alive", source: "ASRService")
-        }
-    }
-
-    /// Restarts the engine with a new device (used for hot-swapping)
-    private func restartEngineWithDevice(_ device: AudioDevice.Device) {
-        guard self.isRunning else {
-            DebugLogger.shared.warning("restartEngineWithDevice() called but not recording", source: "ASRService")
-            return
-        }
-
-        DebugLogger.shared.info("🔄 HOT-SWAPPING device to: '\(device.name)' (uid: \(device.uid))", source: "ASRService")
-
-        // Note: This will cause a brief interruption in recording
-        // The user requested to cancel recording on device change, but we're allowing
-        // auto-switch for convenience. If issues arise, we can make this stricter.
-
-        DebugLogger.shared.debug("Removing engine tap...", source: "ASRService")
-        self.removeEngineTap()
-
-        DebugLogger.shared.debug("Stopping engine...", source: "ASRService")
-        self.engine.stop()
-
-        do {
-            // Recreate engine for hot-swap instead of reset
-            DebugLogger.shared.debug("Recreating engine for device switch...", source: "ASRService")
-            self.engineStorage = nil
-            _ = self.engine.inputNode // Create fresh engine with new node
-            _ = self.setEngineInputDevice(deviceID: device.id, deviceUID: device.uid, deviceName: device.name)
-
-            DebugLogger.shared.debug("Starting engine with new device...", source: "ASRService")
-            try self.startEngine()
-
-            DebugLogger.shared.debug("Setting up engine tap...", source: "ASRService")
-            try self.setupEngineTap()
-
-            // Start monitoring the new device
-            self.startMonitoringDevice(device.id)
-
-            DebugLogger.shared.info("✅ HOT-SWAP successful - now recording with '\(device.name)'", source: "ASRService")
-        } catch {
-            DebugLogger.shared.error("❌ HOT-SWAP FAILED: \(error)", source: "ASRService")
-
-            // Cancel recording on failure
-            Task { @MainActor in
-                await self.stopWithoutTranscription()
-            }
         }
     }
 

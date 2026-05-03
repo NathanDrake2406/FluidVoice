@@ -123,6 +123,10 @@ final class BottomOverlayWindowController {
             return
         }
 
+        NotchContentState.shared.setBottomOverlayReleaseTransitioning(true)
+        NotchContentState.shared.setBottomOverlayDismissOffsetY(28)
+        NotchContentState.shared.setBottomOverlayDismissing(true)
+
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
@@ -166,8 +170,6 @@ final class BottomOverlayWindowController {
         self.audioSubscription = nil
         NotchContentState.shared.bottomOverlayAudioLevel = 0
         NotchContentState.shared.setBottomOverlayReleaseTransitioning(true)
-        NotchContentState.shared.setBottomOverlayDismissOffsetY(28)
-        NotchContentState.shared.setBottomOverlayDismissing(true)
     }
 
     func endReleaseTransition(flushDeferredUpdate: Bool = true) {
@@ -2135,7 +2137,7 @@ struct BottomOverlayView: View {
     }
 
     private var overlayAnimatedOpacity: Double {
-        self.contentState.isBottomOverlayDismissing ? 0.08 : 1.0
+        1.0
     }
 
     private func chipBackground(isHovered: Bool, disabled: Bool) -> some View {

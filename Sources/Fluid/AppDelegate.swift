@@ -104,13 +104,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     private func forceFrontOnLaunch() {
         // Login-item launches can take longer before SwiftUI's main window exists.
-        // Keep retrying for a few seconds so the existing ContentView startup path runs.
+        // Keep retrying while FluidVoice is still foregrounded, but stop if the user switches away.
         for delay in [0.0, 0.12, 0.35, 1.0, 2.0, 4.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
+                guard delay == 0.0 || self.shouldContinueLaunchForegroundRetry() else {
+                    DebugLogger.shared.debug("Skipped launch-front retry because another app is active", source: "AppDelegate")
+                    return
+                }
                 self.bringMainWindowToFront()
             }
         }
+    }
+
+    private func shouldContinueLaunchForegroundRetry() -> Bool {
+        if NSApp.isActive { return true }
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
     }
 
     private func bringMainWindowToFront() {
