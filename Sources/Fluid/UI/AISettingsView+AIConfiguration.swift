@@ -44,48 +44,14 @@ extension AIEnhancementSettingsView {
             .cornerRadius(6)
     }
 
-    func aiOnboardingInfoRow(_ body: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(self.theme.palette.accent.opacity(0.9))
-                .frame(width: 5, height: 5)
-                .padding(.top, 5)
-            Text(body)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
     // MARK: - AI Configuration Card
 
     var aiConfigurationCard: some View {
         VStack(spacing: 14) {
             ThemedCard(style: .prominent, hoverEffect: false) {
                 VStack(alignment: .leading, spacing: 16) {
-                    HStack(spacing: 12) {
-                        HStack(spacing: 10) {
-                            Image(systemName: "brain")
-                                .font(.title3)
-                                .foregroundStyle(self.theme.palette.accent)
-                            Text("AI Setup")
-                                .font(.title3)
-                                .fontWeight(.semibold)
-                        }
-                        Spacer()
-                    }
-
-                    Divider()
-                        .background(self.theme.palette.separator.opacity(0.5))
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Choose a provider, model, and dictation prompt. Select `Off` in Dictate prompts for raw transcription.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        self.aiOnboardingInfoRow("Local models run on your Mac. Examples: Ollama and LM Studio.")
-                        self.aiOnboardingInfoRow("Cloud models use a provider of your choice. Examples: OpenAI, Anthropic, Groq, and OpenRouter.")
-                        self.aiOnboardingInfoRow("Dictation uses AI when Dictate prompt is `Default` or a custom prompt.")
-                    }
+                    self.aiSetupHeader
+                    self.aiSetupSummaryBar
 
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -132,6 +98,85 @@ extension AIEnhancementSettingsView {
                 }
                 .padding(16)
             }
+        }
+    }
+
+    private var aiSetupHeader: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(self.theme.palette.contentBackground.opacity(0.82))
+                    .overlay(
+                        LinearGradient(
+                            colors: [.white.opacity(0.1), .clear],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(self.theme.palette.accent.opacity(0.35), lineWidth: 1)
+                    )
+
+                Image(systemName: "brain")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(self.theme.palette.accent)
+            }
+            .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("AI Enhancements")
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(self.theme.palette.primaryText)
+                Text("Choose the model used for AI Cleanup.")
+                    .font(.caption)
+                    .foregroundStyle(self.theme.palette.secondaryText)
+            }
+
+            Spacer()
+        }
+    }
+
+    private var aiSetupSummaryBar: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                self.aiSetupSummaryItem(icon: "cpu", text: "Local models run on Mac")
+                self.aiSetupSummaryDivider
+                self.aiSetupSummaryItem(icon: "cloud", text: "Cloud models use provider APIs")
+                self.aiSetupSummaryDivider
+                self.aiSetupSummaryItem(icon: "slider.horizontal.3", text: "AI Cleanup enables dictation prompts")
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                self.aiSetupSummaryItem(icon: "cpu", text: "Local models run on Mac")
+                self.aiSetupSummaryItem(icon: "cloud", text: "Cloud models use provider APIs")
+                self.aiSetupSummaryItem(icon: "slider.horizontal.3", text: "AI Cleanup enables dictation prompts")
+            }
+        }
+        .padding(.horizontal, 2)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var aiSetupSummaryDivider: some View {
+        Rectangle()
+            .fill(self.theme.palette.separator.opacity(0.45))
+            .frame(width: 1, height: 14)
+    }
+
+    private func aiSetupSummaryItem(icon: String, text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(self.theme.palette.accent.opacity(0.95))
+                .frame(width: 14)
+
+            Text(text)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(self.theme.palette.secondaryText)
+                .lineLimit(1)
         }
     }
 

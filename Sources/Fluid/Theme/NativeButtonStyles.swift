@@ -1,5 +1,73 @@
 import SwiftUI
 
+enum FluidInteractionVisuals {
+    static let hoverScale: CGFloat = 1.01
+    static let pressedScale: CGFloat = 0.97
+    static let hoverAnimation: Animation = .spring(response: 0.18, dampingFraction: 0.78)
+    static let pressedAnimation: Animation = .spring(response: 0.2, dampingFraction: 0.8)
+
+    static func scale(isPressed: Bool, isHovered: Bool) -> CGFloat {
+        if isPressed { return self.pressedScale }
+        return isHovered ? self.hoverScale : 1
+    }
+}
+
+extension View {
+    func fluidControlSurface(
+        isSelected: Bool,
+        isHovered: Bool,
+        tone: Color,
+        cornerRadius: CGFloat
+    ) -> some View {
+        self.modifier(FluidControlSurfaceModifier(
+            isSelected: isSelected,
+            isHovered: isHovered,
+            tone: tone,
+            cornerRadius: cornerRadius
+        ))
+    }
+}
+
+private struct FluidControlSurfaceModifier: ViewModifier {
+    @Environment(\.theme) private var theme
+    let isSelected: Bool
+    let isHovered: Bool
+    let tone: Color
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
+        let fillOpacity = self.isSelected ? 0.96 : (self.isHovered ? 0.42 : 0)
+        let shineOpacity = self.isSelected ? 0.14 : (self.isHovered ? 0.07 : 0)
+        let strokeColor = self.isSelected
+            ? self.tone.opacity(0.24)
+            : (self.isHovered ? self.theme.palette.cardBorder.opacity(0.28) : .clear)
+
+        content
+            .background(
+                shape
+                    .fill(self.theme.palette.cardBackground.opacity(fillOpacity))
+                    .overlay(
+                        LinearGradient(
+                            colors: [.white.opacity(shineOpacity), .clear],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                        .clipShape(shape)
+                    )
+                    .overlay(shape.stroke(strokeColor, lineWidth: 1))
+                    .shadow(
+                        color: .black.opacity(self.isSelected ? 0.16 : (self.isHovered ? 0.08 : 0)),
+                        radius: self.isSelected || self.isHovered ? 5 : 0,
+                        y: self.isSelected || self.isHovered ? 1 : 0
+                    )
+            )
+            .scaleEffect(self.isHovered && !self.isSelected ? FluidInteractionVisuals.hoverScale : 1)
+            .animation(FluidInteractionVisuals.hoverAnimation, value: self.isSelected)
+            .animation(FluidInteractionVisuals.hoverAnimation, value: self.isHovered)
+    }
+}
+
 // MARK: - Primary (Prominent) Button
 
 struct GlassButtonStyle: ButtonStyle {
@@ -48,9 +116,9 @@ struct GlassButtonStyle: ButtonStyle {
                     x: 0,
                     y: self.isHovered ? self.theme.metrics.cardShadow.y : self.theme.metrics.cardShadow.y - 2
                 )
-                .scaleEffect(self.configuration.isPressed ? 0.97 : (self.isHovered ? 1.01 : 1.0))
-                .animation(.spring(response: 0.18, dampingFraction: 0.78), value: self.isHovered)
-                .animation(.spring(response: 0.2, dampingFraction: 0.8), value: self.configuration.isPressed)
+                .scaleEffect(FluidInteractionVisuals.scale(isPressed: self.configuration.isPressed, isHovered: self.isHovered))
+                .animation(FluidInteractionVisuals.hoverAnimation, value: self.isHovered)
+                .animation(FluidInteractionVisuals.pressedAnimation, value: self.configuration.isPressed)
                 .onHover { self.isHovered = $0 }
         }
     }
@@ -122,9 +190,9 @@ struct PremiumButtonStyle: ButtonStyle {
                     x: 0,
                     y: self.isHovered ? self.theme.metrics.elevatedCardShadow.y : self.theme.metrics.cardShadow.y
                 )
-                .scaleEffect(self.configuration.isPressed ? 0.98 : (self.isHovered ? 1.01 : 1.0))
-                .animation(.spring(response: 0.18, dampingFraction: 0.75), value: self.isHovered)
-                .animation(.spring(response: 0.18, dampingFraction: 0.75), value: self.configuration.isPressed)
+                .scaleEffect(FluidInteractionVisuals.scale(isPressed: self.configuration.isPressed, isHovered: self.isHovered))
+                .animation(FluidInteractionVisuals.hoverAnimation, value: self.isHovered)
+                .animation(FluidInteractionVisuals.pressedAnimation, value: self.configuration.isPressed)
                 .onHover { self.isHovered = $0 }
         }
     }
@@ -169,9 +237,9 @@ struct SecondaryButtonStyle: ButtonStyle {
                     x: 0,
                     y: self.isHovered ? self.theme.metrics.cardShadow.y : self.theme.metrics.cardShadow.y - 2
                 )
-                .scaleEffect(self.configuration.isPressed ? 0.98 : (self.isHovered ? 1.01 : 1.0))
-                .animation(.spring(response: 0.18, dampingFraction: 0.78), value: self.isHovered)
-                .animation(.spring(response: 0.2, dampingFraction: 0.8), value: self.configuration.isPressed)
+                .scaleEffect(FluidInteractionVisuals.scale(isPressed: self.configuration.isPressed, isHovered: self.isHovered))
+                .animation(FluidInteractionVisuals.hoverAnimation, value: self.isHovered)
+                .animation(FluidInteractionVisuals.pressedAnimation, value: self.configuration.isPressed)
                 .onHover { self.isHovered = $0 }
         }
     }
@@ -231,9 +299,9 @@ struct CompactButtonStyle: ButtonStyle {
                     x: 0,
                     y: self.isHovered ? self.theme.metrics.cardShadow.y - 1 : 1
                 )
-                .scaleEffect(self.configuration.isPressed ? 0.97 : (self.isHovered ? 1.01 : 1.0))
-                .animation(.spring(response: 0.18, dampingFraction: 0.78), value: self.isHovered)
-                .animation(.spring(response: 0.2, dampingFraction: 0.8), value: self.configuration.isPressed)
+                .scaleEffect(FluidInteractionVisuals.scale(isPressed: self.configuration.isPressed, isHovered: self.isHovered))
+                .animation(FluidInteractionVisuals.hoverAnimation, value: self.isHovered)
+                .animation(FluidInteractionVisuals.pressedAnimation, value: self.configuration.isPressed)
                 .onHover { self.isHovered = $0 }
         }
     }
@@ -288,9 +356,9 @@ struct AccentButtonStyle: ButtonStyle {
                     x: 0,
                     y: self.isHovered ? 3 : 2
                 )
-                .scaleEffect(self.configuration.isPressed ? 0.97 : (self.isHovered ? 1.02 : 1.0))
-                .animation(.spring(response: 0.18, dampingFraction: 0.78), value: self.isHovered)
-                .animation(.spring(response: 0.2, dampingFraction: 0.8), value: self.configuration.isPressed)
+                .scaleEffect(FluidInteractionVisuals.scale(isPressed: self.configuration.isPressed, isHovered: self.isHovered))
+                .animation(FluidInteractionVisuals.hoverAnimation, value: self.isHovered)
+                .animation(FluidInteractionVisuals.pressedAnimation, value: self.configuration.isPressed)
                 .onHover { self.isHovered = $0 }
         }
     }
@@ -329,9 +397,9 @@ struct InlineButtonStyle: ButtonStyle {
                     x: 0,
                     y: self.isHovered ? 3 : 1
                 )
-                .scaleEffect(self.configuration.isPressed ? 0.96 : (self.isHovered ? 1.03 : 1.0))
-                .animation(.easeOut(duration: 0.15), value: self.isHovered)
-                .animation(.easeOut(duration: 0.15), value: self.configuration.isPressed)
+                .scaleEffect(FluidInteractionVisuals.scale(isPressed: self.configuration.isPressed, isHovered: self.isHovered))
+                .animation(FluidInteractionVisuals.hoverAnimation, value: self.isHovered)
+                .animation(FluidInteractionVisuals.pressedAnimation, value: self.configuration.isPressed)
                 .onHover { self.isHovered = $0 }
         }
     }

@@ -1,11 +1,11 @@
+import CryptoKit
 import Foundation
 
 /// Shared gating logic for whether dictation AI post-processing is usable/configured.
 enum DictationAIPostProcessingGate {
     /// Returns true if dictation AI post-processing should be allowed, given current settings.
     /// - Requires dictation prompt selection to not be `Off`
-    /// - For Apple Intelligence: requires `AppleIntelligenceService.isAvailable`
-    /// - For other providers: requires a local endpoint OR a non-empty API key
+    /// - Requires the selected provider connection to still be verified
     static func isConfigured() -> Bool {
         self.isConfigured(for: .primary)
     }
@@ -17,18 +17,23 @@ enum DictationAIPostProcessingGate {
         return self.isProviderConfigured()
     }
 
-    /// Returns true if the selected AI provider is reachable/configured (API key or local endpoint),
+    /// Returns true if the selected AI provider is currently verified/configured,
     /// regardless of the AI toggle or prompt selection. Used to gate prompt-mode hotkey AI processing.
     static func isProviderConfigured() -> Bool {
         let settings = SettingsStore.shared
         let providerID = settings.selectedProviderID
+        let key = self.providerKey(for: providerID)
+        guard let storedFingerprint = settings.verifiedProviderFingerprints[key] else { return false }
+
         if providerID == "apple-intelligence" {
-            return AppleIntelligenceService.isAvailable
+            return storedFingerprint == "apple-intelligence" && AppleIntelligenceService.isAvailable
         }
+
         let baseURL = self.baseURL(for: providerID, settings: settings)
-        if self.isLocalEndpoint(baseURL) { return true }
         let apiKey = (settings.getAPIKey(for: providerID) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return !apiKey.isEmpty
+        guard self.isLocalEndpoint(baseURL) || !apiKey.isEmpty else { return false }
+
+        return self.providerFingerprint(baseURL: baseURL, apiKey: apiKey) == storedFingerprint
     }
 
     static func baseURL(for providerID: String, settings: SettingsStore) -> String {
@@ -41,6 +46,22 @@ enum DictationAIPostProcessingGate {
         }
         // Unknown provider - fallback to OpenAI
         return ModelRepository.shared.defaultBaseURL(for: "openai")
+    }
+
+    static func providerKey(for providerID: String) -> String {
+        if ModelRepository.shared.isBuiltIn(providerID) { return providerID }
+        if providerID.hasPrefix("custom:") { return providerID }
+        return "custom:\(providerID)"
+    }
+
+    static func providerFingerprint(baseURL: String, apiKey: String) -> String? {
+        let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBase.isEmpty else { return nil }
+
+        let input = "\(trimmedBase)|\(trimmedKey)"
+        let digest = SHA256.hash(data: Data(input.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     static func isLocalEndpoint(_ urlString: String) -> Bool {

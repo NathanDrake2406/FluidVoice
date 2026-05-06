@@ -11,6 +11,9 @@ struct AIEnhancementSettingsView: View {
     @State var fluid1InterestErrorMessage: String = ""
     @State var fluid1InterestIsSubmitting: Bool = false
     @State var hoveredPromptCardKey: String? = nil
+    @State var selectedPromptMode: SettingsStore.PromptMode = .dictate
+    @State var hoveredPromptModeKey: String? = nil
+    @State var hoveredCleanupControlKey: String? = nil
 
     var body: some View {
         self.aiConfigurationCard

@@ -59,7 +59,7 @@ struct ButtonHoverModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .scaleEffect(self.isHovered ? 1.05 : 1.0)
+            .scaleEffect(self.isHovered ? FluidInteractionVisuals.hoverScale : 1.0)
             .shadow(
                 color: self.theme.palette.accent.opacity(self.isHovered ? 0.35 : 0.0),
                 radius: self.isHovered ? 8 : 0,
@@ -69,7 +69,7 @@ struct ButtonHoverModifier: ViewModifier {
             .onHover { hovering in
                 self.isHovered = hovering
             }
-            .animation(.spring(response: 0.2, dampingFraction: 0.7), value: self.isHovered)
+            .animation(FluidInteractionVisuals.hoverAnimation, value: self.isHovered)
     }
 }
 
